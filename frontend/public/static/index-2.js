@@ -601,9 +601,12 @@ function syncNodeForm(){
   let net     = $('#nnet').value;
   const sec   = $('#nsec').value;
 
-  // REALITY 靠模仿 TLS 握手工作，套在自带头部的传输上没有意义
-  for(const option of $('#nnet').options){ option.disabled = (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
+  // Hysteria2 / TUIC 基于 QUIC：无传输/安全层可选，且需要 sing-box 核心
+  const isQuic = proto === 'hysteria2' || proto === 'tuic';
+  for(const option of $('#nnet').options){ option.disabled = isQuic || (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
   if($('#nnet').selectedOptions[0].disabled) { $('#nnet').value = 'tcp'; net = 'tcp'; }
+  for(const option of $('#nsec').options){ option.disabled = isQuic; }
+  $('#nsechint').textContent = isQuic ? 'QUIC 协议：TLS 内置，需 sing-box 核心；端口走 UDP。' : '';
   const realityOK = net === 'tcp' || net === 'xhttp' || net === 'grpc';
   const secSel = $('#nsec');
   for(const o of secSel.options){
