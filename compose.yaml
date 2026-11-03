@@ -18,9 +18,6 @@ services:
       WEB_PORT: ${WEB_PORT:-}
       MIKU_PUBLIC_IP: ${MIKU_PUBLIC_IP:-}
       MIKU_MAX_SLOTS: ${MIKU_MAX_SLOTS:-0}
-      MIKU_RELAY_UPSTREAM: ${MIKU_RELAY_UPSTREAM:-127.0.0.1:8500}
-      MIKU_RELAY_UPSTREAM_USER: ${MIKU_RELAY_UPSTREAM_USER:-}
-      MIKU_RELAY_UPSTREAM_PASS: ${MIKU_RELAY_UPSTREAM_PASS:-}
     volumes:
       - ./docker-data:/var/lib/miku
       - ./docker-certs/etc:/etc/letsencrypt

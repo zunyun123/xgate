@@ -6,6 +6,10 @@
 
 VPN Gate 不属于 Miku Gate。节点数量、国家、在线时间随时变化，**不保证住宅 IP、固定出口、在线率或严格隐私，也不是无日志服务**。请阅读[官方介绍](https://www.vpngate.net/en/about_overview.aspx)与[日志和反滥用政策](https://www.vpngate.net/en/about_abuse.aspx)，遵守当地法律与服务商规则。
 
+## Hysteria2 / TUIC 协议桥
+
+本仓库附带一个独立 sing-box 协议桥，可将 Hysteria2/TUIC 入站通过 y-gate 的认证 SOCKS5 代理出口转发。它是旁路侧车，并非 y-gate 面板内原生的节点管理协议；需另行准备公网 UDP 入口和有效 TLS 证书。部署步骤、限制和配置生成器见 [`deploy/protocol-bridge`](deploy/protocol-bridge/README.md)。
+
 ## 感谢 fanout
 
 特别感谢 **[byJoey/fanout](https://github.com/byJoey/fanout)**。Miku Gate 基于其按国家批量出口、网络命名空间隔离和自动重连能力，再加入 Miku 界面、多格式订阅、终端一键配置、Docker 与前后端分离。

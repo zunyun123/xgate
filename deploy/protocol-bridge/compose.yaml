@@ -1,0 +1,10 @@
+services:
+  protocol-bridge:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: y-gate-protocol-bridge
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.json:/etc/sing-box/config.json:ro
+      - ./certs:/etc/sing-box/certs:ro
+    command: ["run", "-c", "/etc/sing-box/config.json"]
