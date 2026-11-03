@@ -30,8 +30,8 @@ type nativeClient struct {
 type nativeInbound struct {
 	ID       int    `json:"id"`
 	Port     int    `json:"port"`
-	Protocol string `json:"protocol"` // vless | vmess | trojan
-	Network  string `json:"network"`  // tcp | ws | grpc | httpupgrade | xhttp
+	Protocol string `json:"protocol"` // vless | vmess | trojan | hysteria2 | tuic
+	Network  string `json:"network"`  // tcp | ws | grpc | httpupgrade | xhttp | udp（仅 hysteria2/tuic）
 	Path     string `json:"path"`     // ws/httpupgrade/xhttp 路径，grpc 用作 serviceName
 	Host     string `json:"host"`     // ws/httpupgrade/xhttp 的 Host 头
 	// Security 是传输层安全：none | tls | reality

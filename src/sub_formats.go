@@ -102,7 +102,7 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if alpn := q.Get("alpn"); alpn != "" {
 			n.ALPN = strings.Split(alpn, ",")
 		}
-		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1"
+		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1" || q.Get("allow_insecure") == "1"
 		if u.User != nil {
 			n.Username = u.User.Username()
 			n.Password, _ = u.User.Password()
@@ -115,6 +115,15 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 			if n.Security == "" {
 				n.Security = "tls"
 			}
+		case "hysteria2":
+			// hysteria2://<密码>@host:port，userinfo 只有密码没有用户名。
+			n.Password = n.Username
+			n.Security = "tls"
+		case "tuic":
+			// tuic://<uuid>:<密码>@host:port，uuid 已在 Username 里，
+			// 密码在 User.Password() 里，上面已填好。
+			n.UUID = n.Username
+			n.Security = "tls"
 		case "https":
 			n.Protocol = "http"
 			n.Security = "tls"
@@ -154,9 +163,13 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if n.UUID == "" {
 			return n, fmt.Errorf("缺少节点UUID")
 		}
-	case "trojan", "ss":
+	case "trojan", "ss", "hysteria2":
 		if n.Password == "" {
 			return n, fmt.Errorf("缺少节点密码")
+		}
+	case "tuic":
+		if n.UUID == "" || n.Password == "" {
+			return n, fmt.Errorf("缺少节点UUID或密码")
 		}
 	case "socks5", "http":
 	default:
@@ -295,6 +308,15 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 		v["password"] = n.Password
 		v["udp"] = true
 		v["network"] = n.Network
+	case "hysteria2":
+		v["password"] = n.Password
+		v["udp"] = true
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["udp"] = true
+		v["udp-relay-mode"] = "native"
+		v["congestion-controller"] = "bbr"
 	case "ss":
 		v["password"] = n.Password
 		v["cipher"] = n.Cipher
@@ -307,7 +329,7 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 	}
 	if n.Security != "none" {
 		v["tls"] = true
-		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" {
+		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" || n.Protocol == "hysteria2" || n.Protocol == "tuic" {
 			v["sni"] = n.ServerName
 		} else {
 			v["servername"] = n.ServerName
@@ -372,6 +394,13 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		v["alter_id"] = n.AlterID
 	case "trojan":
 		v["password"] = n.Password
+	case "hysteria2":
+		v["password"] = n.Password
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["congestion_control"] = "bbr"
+		v["udp_relay_mode"] = "native"
 	case "ss":
 		v["password"] = n.Password
 		v["method"] = n.Cipher

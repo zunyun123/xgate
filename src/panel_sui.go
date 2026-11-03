@@ -606,6 +606,12 @@ func (s *SUIPanel) DeleteInbounds(ids []int, tunnels []*Tunnel) error {
 func (s *SUIPanel) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*CreatedInbound, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// S-UI 这条路会把 inbound 的 users 剥掉、走面板自己的用户体系，
+	// Hy2/TUIC 的凭据恰恰就放在 users 里，剥掉就等于建了个登不上的入站。
+	// 所以在这里直接拦住，让用户用自建 sing-box 模式。
+	if isRelayProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
+		return nil, fmt.Errorf("%s 请在自建 sing-box 模式下创建，S-UI 接管模式不支持", spec.Protocol)
+	}
 	snapshot, err := s.load()
 	if err != nil {
 		return nil, err

@@ -1567,6 +1567,11 @@ func xuiRunning() bool {
 // fanout 插手它的 sqlite 只会两边打架。载荷字段照面板自己生成的入站抄，
 // settings/streamSettings/sniffing 要编码成字符串，这是面板 API 的要求。
 func (x *XUI) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*CreatedInbound, error) {
+	// 3x-ui 走的是 Xray 入站，Xray 没有 Hysteria2/TUIC 入站协议，
+	// 在这里建只会得到面板也认不出的配置，直接拦住。
+	if isRelayProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
+		return nil, fmt.Errorf("%s 请在自建 sing-box 模式下创建，3x-ui 模式不支持", spec.Protocol)
+	}
 	used, err := x.usedPorts()
 	if err != nil {
 		return nil, err
