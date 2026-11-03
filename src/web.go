@@ -331,15 +331,14 @@ button,input,select,textarea{border-radius:8px}button{padding:7px 12px}h2,.bar h
           <option value="vless">VLESS</option>
           <option value="vmess">VMess</option>
           <option value="trojan">Trojan</option>
-          <option value="hysteria2">Hysteria2（仅 sing-box，串联 8500 出口）</option>
-          <option value="tuic">TUIC（仅 sing-box，串联 8500 出口）</option>
+          <option value="hysteria2">Hysteria2</option>
+          <option value="tuic">TUIC</option>
         </select>
       </label>
       <label class="f">
         <span>传输</span>
         <select id="nnet">
           <option value="tcp">TCP</option>
-          <option value="udp">UDP（仅 Hysteria2/TUIC）</option>
           <option value="ws">WebSocket</option>
           <option value="grpc">gRPC</option>
           <option value="httpupgrade">HTTPUpgrade</option>
@@ -958,19 +957,17 @@ function syncNodeForm(){
   let net     = $('#nnet').value;
   const sec   = $('#nsec').value;
 
-  // Hysteria2/TUIC 是 UDP/QUIC + 强制 TLS 的串联入站，只在 sing-box 下能建：
-  // 传输锁死 UDP，安全锁死 TLS，其他选项全禁掉，免得用户配出后端会拒绝的组合。
-  const isRelay = proto === 'hysteria2' || proto === 'tuic';
-  for(const option of $('#nnet').options){ option.disabled = isRelay ? option.value !== 'udp' : (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
-  if(isRelay){ $('#nnet').value = 'udp'; net = 'udp'; }
+  // Hysteria2 / TUIC 基于 QUIC：无传输/安全层可选，且需要 sing-box 核心
+  const isQuic = proto === 'hysteria2' || proto === 'tuic';
+  for(const option of $('#nnet').options){ option.disabled = isQuic || (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
   if($('#nnet').selectedOptions[0].disabled) { $('#nnet').value = 'tcp'; net = 'tcp'; }
-  const realityOK = !isRelay && (net === 'tcp' || net === 'xhttp' || net === 'grpc');
+  for(const option of $('#nsec').options){ option.disabled = isQuic; }
+  $('#nsechint').textContent = isQuic ? 'QUIC 协议：TLS 内置，需 sing-box 核心；端口走 UDP。' : '';
+  const realityOK = net === 'tcp' || net === 'xhttp' || net === 'grpc';
   const secSel = $('#nsec');
   for(const o of secSel.options){
     if(o.value === 'reality') o.disabled = !realityOK;
-    if(o.value === 'none') o.disabled = isRelay;
   }
-  if(isRelay) secSel.value = 'tls';
   if(secSel.value === 'reality' && !realityOK) secSel.value = 'none';
 
   const cur = secSel.value;
@@ -990,7 +987,6 @@ $('#ncertwrap').hidden = cur !== 'tls' || $('#ncertificate').value !== 'manual';
   $('#npathlabel').textContent = net === 'grpc' ? '服务名' : '路径';
 
   $('#nsechint').textContent =
-    isRelay ? '串联模式：客户端流量先到本机 sing-box，再经本地 8500 SOCKS5 出口出海；未绑出口时默认走 8500，绑了出口则走该出口。' :
     cur === 'reality' ? '密钥与 shortId 自动生成' :
     cur === 'tls' ? '优先使用已绑定域名与证书；自签证书链接带指纹。' : '';
 }

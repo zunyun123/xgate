@@ -66,16 +66,6 @@ func (n *Native) Describe() string {
 // apply 重新生成配置并重启 Xray，然后落盘。
 // 调用方必须已持有 n.mu。
 func (n *Native) apply(tunnels []*Tunnel) error {
-	// 切核心时旧的 Hy2/TUIC 入站还在库里的话，Xray 配置生成器
-	// 会把它当成普通协议写出去，校验必然失败。提前报错比让
-	// apply 半路失败、还把用户其他入站也拖下水要清楚得多。
-	if n.proc.kind() != "sing-box" {
-		for _, ib := range n.store.sorted() {
-			if ib.Enable && isRelayProtocol(ib.Protocol) {
-				return fmt.Errorf("入站 %s 是 %s，只能在 sing-box 模式下运行，请先切回 sing-box 或删除该入站", ib.Remark, ib.Protocol)
-			}
-		}
-	}
 	cfg := buildXrayConfig(n.store.sorted(), tunnels)
 	if n.proc.kind() == "sing-box" {
 		var err error
@@ -194,7 +184,7 @@ func (n *Native) InboundDetail(id int, publicHost string) (*InboundDetail, error
 	}
 	for _, c := range ib.Clients {
 		id := c.ID
-		if ib.Protocol == "trojan" || ib.Protocol == "hysteria2" {
+		if ib.Protocol == "trojan" {
 			id = c.Password
 		}
 		detail.Clients = append(detail.Clients, ClientInfo{Email: c.Email, ID: id, Enable: c.Enable, BoundTo: c.BoundTo})
@@ -567,9 +557,12 @@ type NewInboundSpec struct {
 }
 
 // nativeProtocols 是自建模式支持的协议，与前端下拉保持一致。
-// hysteria2/tuic 只有 sing-box 核心能跑，CreateInbound 里会再按核心把关，
-// Xray 核心、3x-ui、S-UI 下建它们都会直接报错而不是生成坏配置。
+// hysteria2 / tuic 由 sing-box 核心提供服务端，xray 核心不支持（见 CreateInbound）。
 var nativeProtocols = map[string]bool{"vless": true, "vmess": true, "trojan": true, "hysteria2": true, "tuic": true}
+
+// quicProtocols 是基于 QUIC/UDP 的协议：无 network/security 组合可选，
+// TLS 内置于协议本身（Hysteria2 固定 TLS1.3，TUIC 走 QUIC TLS）。
+var quicProtocols = map[string]bool{"hysteria2": true, "tuic": true}
 
 // CreateInbound 新建一个入站，端口留空时随机分配。
 func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*CreatedInbound, error) {
@@ -581,10 +574,14 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*Created
 		return nil, err
 	}
 	proto, network, security, port := ns.Protocol, ns.Network, ns.Security, ns.Port
-	// Hysteria2/TUIC 不是 Xray 入站协议，Xray 核心下建站只会生成
-	// Xray 读不懂的配置，所以在这里就拦住，让用户切到 sing-box 模式。
-	if isRelayProtocol(proto) && n.proc.kind() != "sing-box" {
-		return nil, fmt.Errorf("%s 只能在自建 sing-box 模式下创建，当前核心是 %s", proto, n.proc.kind())
+
+	// Hysteria2 / TUIC 基于 QUIC：必须在 sing-box 核心（xray 无服务端实现），
+	// 传输固定 udp、安全层固定 tls（内置于 QUIC 握手）。
+	if quicProtocols[proto] {
+		if n.proc.kind() != "sing-box" {
+			return nil, fmt.Errorf("Hysteria2/TUIC 需要 sing-box 核心；当前核心是 %s，请切换核心后重试", n.proc.kind())
+		}
+		network, security = "udp", "tls"
 	}
 
 	ib := &nativeInbound{
@@ -713,36 +710,34 @@ func shareLink(ib *nativeInbound, c nativeClient, host string) string {
 		addressHost = "[" + strings.Trim(host, "[]") + "]"
 	}
 
-	// Hysteria2/TUIC 不走上面那套 vless/vmess/trojan 查询参数：
-	// 它们是 UDP/QUIC 入站，凭据和 TLS 参数的写法各家客户端都按
-	// 下面这两种固定格式认。自签证书时用 insecure/allow_insecure=1，
-	// 否则客户端会因为验不过自签证书而直接拒绝连接；有正式证书时
-	// 只带 sni，让客户端正常验签。
-	if ib.Protocol == "hysteria2" {
-		hq := url.Values{}
-		if ib.TLS != nil && ib.TLS.ServerName != "" {
-			hq.Set("sni", ib.TLS.ServerName)
-		}
-		if ib.TLS != nil && ib.TLS.SelfSigned {
-			hq.Set("insecure", "1")
-		}
-		return fmt.Sprintf("hysteria2://%s@%s:%d?%s#%s", url.User(c.Password).String(), addressHost, ib.Port, hq.Encode(), frag)
-	}
-	if ib.Protocol == "tuic" {
-		tq := url.Values{}
-		tq.Set("congestion_control", "bbr")
-		tq.Set("udp_relay_mode", "native")
-		tq.Set("alpn", "h3")
-		if ib.TLS != nil && ib.TLS.ServerName != "" {
-			tq.Set("sni", ib.TLS.ServerName)
-		}
-		if ib.TLS != nil && ib.TLS.SelfSigned {
-			tq.Set("allow_insecure", "1")
-		}
-		return fmt.Sprintf("tuic://%s:%s@%s:%d?%s#%s", c.ID, url.QueryEscape(c.Password), addressHost, ib.Port, tq.Encode(), frag)
-	}
-
 	switch ib.Protocol {
+	case "hysteria2":
+		// hysteria2://password@host:port?sni=...&insecure=1#名称
+		// 自签证书无法过 CA 校验，链接里带 insecure=1；用户自己的证书则只带 sni。
+		q2 := url.Values{}
+		if ib.TLS != nil && ib.TLS.ServerName != "" && ib.TLS.ServerName != "localhost" {
+			q2.Set("sni", ib.TLS.ServerName)
+		}
+		if ib.TLS != nil && ib.TLS.SelfSigned {
+			q2.Set("insecure", "1")
+		}
+		if len(q2) > 0 {
+			q2.Encode()
+		}
+		return fmt.Sprintf("hysteria2://%s@%s:%d?%s#%s", url.User(c.Password).String(), addressHost, ib.Port, q2.Encode(), frag)
+	case "tuic":
+		// tuic://uuid:password@host:port?congestion_control=bbr&udp_relay_mode=native&sni=...#名称
+		q3 := url.Values{}
+		q3.Set("congestion_control", "bbr")
+		q3.Set("udp_relay_mode", "native")
+		q3.Set("alpn", "h3")
+		if ib.TLS != nil && ib.TLS.ServerName != "" && ib.TLS.ServerName != "localhost" {
+			q3.Set("sni", ib.TLS.ServerName)
+		}
+		if ib.TLS != nil && ib.TLS.SelfSigned {
+			q3.Set("allow_insecure", "1")
+		}
+		return fmt.Sprintf("tuic://%s:%s@%s:%d?%s#%s", c.ID, url.QueryEscape(c.Password), addressHost, ib.Port, q3.Encode(), frag)
 	case "trojan":
 		return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", url.User(c.Password).String(), addressHost, ib.Port, q.Encode(), frag)
 	case "vmess":

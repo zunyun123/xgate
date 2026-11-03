@@ -102,28 +102,22 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if alpn := q.Get("alpn"); alpn != "" {
 			n.ALPN = strings.Split(alpn, ",")
 		}
-		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1" || q.Get("allow_insecure") == "1"
+		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1"
 		if u.User != nil {
 			n.Username = u.User.Username()
 			n.Password, _ = u.User.Password()
 		}
 		switch n.Protocol {
-		case "vless", "vmess":
+		case "vless", "vmess", "tuic":
 			n.UUID = n.Username
+		case "hysteria2":
+			// hysteria2://password@host:port — 密码在 username 位（链接里没有冒号分隔）
+			n.Password = n.Username
 		case "trojan":
 			n.Password = n.Username
 			if n.Security == "" {
 				n.Security = "tls"
 			}
-		case "hysteria2":
-			// hysteria2://<密码>@host:port，userinfo 只有密码没有用户名。
-			n.Password = n.Username
-			n.Security = "tls"
-		case "tuic":
-			// tuic://<uuid>:<密码>@host:port，uuid 已在 Username 里，
-			// 密码在 User.Password() 里，上面已填好。
-			n.UUID = n.Username
-			n.Security = "tls"
 		case "https":
 			n.Protocol = "http"
 			n.Security = "tls"
@@ -163,17 +157,24 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if n.UUID == "" {
 			return n, fmt.Errorf("缺少节点UUID")
 		}
-	case "trojan", "ss", "hysteria2":
+	case "hysteria2", "tuic":
 		if n.Password == "" {
 			return n, fmt.Errorf("缺少节点密码")
 		}
-	case "tuic":
-		if n.UUID == "" || n.Password == "" {
-			return n, fmt.Errorf("缺少节点UUID或密码")
+		if n.Protocol == "tuic" && n.UUID == "" {
+			return n, fmt.Errorf("缺少节点UUID")
+		}
+		// QUIC 系协议 TLS 内置，链接里没有 security 字段
+		if n.Security == "none" {
+			n.Security = "tls"
+		}
+	case "trojan", "ss":
+		if n.Password == "" {
+			return n, fmt.Errorf("缺少节点密码")
 		}
 	case "socks5", "http":
 	default:
-		return n, fmt.Errorf("支持VLESS、VMess、Trojan、SS、SOCKS5和HTTP链接")
+		return n, fmt.Errorf("支持VLESS、VMess、Trojan、SS、Hysteria2、TUIC、SOCKS5和HTTP链接")
 	}
 	if n.Security != "none" && n.Security != "tls" && n.Security != "reality" {
 		return n, fmt.Errorf("不支持的安全层")
@@ -308,19 +309,25 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 		v["password"] = n.Password
 		v["udp"] = true
 		v["network"] = n.Network
-	case "hysteria2":
-		v["password"] = n.Password
-		v["udp"] = true
-	case "tuic":
-		v["uuid"] = n.UUID
-		v["password"] = n.Password
-		v["udp"] = true
-		v["udp-relay-mode"] = "native"
-		v["congestion-controller"] = "bbr"
 	case "ss":
 		v["password"] = n.Password
 		v["cipher"] = n.Cipher
 		v["udp"] = true
+	case "hysteria2":
+		v["password"] = n.Password
+		v["udp"] = true
+		if n.Insecure {
+			v["skip-cert-verify"] = true
+		}
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["udp"] = true
+		v["congestion-controller"] = "bbr"
+		v["alpn"] = []string{"h3"}
+		if n.Insecure {
+			v["skip-cert-verify"] = true
+		}
 	case "http", "socks5":
 		if n.Username != "" {
 			v["username"] = n.Username
@@ -329,7 +336,7 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 	}
 	if n.Security != "none" {
 		v["tls"] = true
-		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" || n.Protocol == "hysteria2" || n.Protocol == "tuic" {
+		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" {
 			v["sni"] = n.ServerName
 		} else {
 			v["servername"] = n.ServerName
@@ -352,6 +359,11 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 	}
 	switch n.Network {
 	case "tcp":
+	case "udp":
+		// Hysteria2 / TUIC 等 QUIC 协议：clash/sing-box 出口无需 transport 配置
+		if _, ok := map[string]bool{"hysteria2": true, "tuic": true}[n.Protocol]; !ok {
+			return nil, fmt.Errorf("%s: Clash格式不支持此传输，请使用通用/V2Ray订阅", n.Name)
+		}
 	case "ws", "httpupgrade":
 		v["network"] = "ws"
 		opts := map[string]any{"path": n.Path}
@@ -394,6 +406,9 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		v["alter_id"] = n.AlterID
 	case "trojan":
 		v["password"] = n.Password
+	case "ss":
+		v["password"] = n.Password
+		v["method"] = n.Cipher
 	case "hysteria2":
 		v["password"] = n.Password
 	case "tuic":
@@ -401,9 +416,6 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		v["password"] = n.Password
 		v["congestion_control"] = "bbr"
 		v["udp_relay_mode"] = "native"
-	case "ss":
-		v["password"] = n.Password
-		v["method"] = n.Cipher
 	case "socks5", "http":
 		if n.Username != "" {
 			v["username"] = n.Username
@@ -438,6 +450,11 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 	}
 	switch n.Network {
 	case "tcp":
+	case "udp":
+		// Hysteria2 / TUIC 等 QUIC 协议：sing-box 出口无需 transport 配置
+		if _, ok := map[string]bool{"hysteria2": true, "tuic": true}[n.Protocol]; !ok {
+			return nil, fmt.Errorf("%s: sing-box不支持此传输，请使用通用/V2Ray订阅", n.Name)
+		}
 	case "ws":
 		tr := map[string]any{"type": "ws", "path": n.Path}
 		if n.Host != "" {
