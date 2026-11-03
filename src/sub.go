@@ -135,6 +135,10 @@ func subLinks(m *Manager, host string, boundOnly bool) ([]string, error) {
 			if !inbound.Enable {
 				continue
 			}
+			// VMess 已移除：即使库里还残留，也绝不放进订阅输出。
+			if inbound.Protocol == "vmess" {
+				continue
+			}
 			for _, client := range inbound.Clients {
 				if !client.Enable {
 					continue

@@ -29,7 +29,7 @@ func (m *Manager) exitLinks(slot, inboundID int, host string) ([]string, error) 
 		defer n.mu.Unlock()
 		var links []string
 		for _, ib := range n.store.sorted() {
-			if !ib.Enable || inboundID != 0 && ib.ID != inboundID {
+			if !ib.Enable || ib.Protocol == "vmess" || inboundID != 0 && ib.ID != inboundID {
 				continue
 			}
 			for _, c := range ib.Clients {

@@ -8,7 +8,11 @@ import (
 )
 
 func sameNativeTemplate(a, b *nativeInbound) bool {
-	if a.Protocol != b.Protocol || a.netOrTCP() != b.netOrTCP() || a.securityOrNone() != b.securityOrNone() || a.Path != b.Path || a.Host != b.Host || !reflect.DeepEqual(a.TLS, b.TLS) || !reflect.DeepEqual(a.Reality, b.Reality) || len(a.Clients) != len(b.Clients) {
+	// ObfsPassword 算模板身份：Salamander 口令不同就是不同节点，
+	// 混淆错了客户端连不上，不能把旧口令的入站当成模板复用。
+	// HopPorts 不算：克隆到每个出口的跳跃段本来就是分别分配的，
+	// 算进去的话已克隆的入站永远匹配不上模板，会重复新建。
+	if a.Protocol != b.Protocol || a.netOrTCP() != b.netOrTCP() || a.securityOrNone() != b.securityOrNone() || a.Path != b.Path || a.Host != b.Host || a.ObfsPassword != b.ObfsPassword || !reflect.DeepEqual(a.TLS, b.TLS) || !reflect.DeepEqual(a.Reality, b.Reality) || len(a.Clients) != len(b.Clients) {
 		return false
 	}
 	identities := func(ib *nativeInbound) []string {
@@ -46,6 +50,17 @@ func reconcileNativeEntry(store *nativeStore, tpl *nativeInbound, t *Tunnel, all
 		}
 		clone := *tpl
 		clone.ID, clone.Port = store.NextID, port
+		// 跳跃段不能照抄模板：每个出口的跳跃端口必须互不冲突，
+		// 这里按模板段的端口个数单独分配一段，Salamander 口令则照抄。
+		if tplHop, err := parseHopPorts(tpl.HopPorts); err != nil {
+			return false, err
+		} else if len(tplHop) > 0 {
+			allocated, err := allocateHopRange(store.usedPorts(), len(tplHop))
+			if err != nil {
+				return false, err
+			}
+			clone.HopPorts = hopPortsString(allocated)
+		}
 		clone.Clients = append([]nativeClient(nil), tpl.Clients...)
 		for i := range clone.Clients {
 			clone.Clients[i].BoundTo = ""

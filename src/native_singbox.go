@@ -89,140 +89,129 @@ func buildSingBoxConfig(inbounds []*nativeInbound, tunnels []*Tunnel) (map[strin
 		if !ib.Enable {
 			continue
 		}
+		if ib.Protocol == "vmess" {
+			return nil, fmt.Errorf("VMess 协议已移除，请删除节点 %q", ib.Remark)
+		}
 		if ib.netOrTCP() == "xhttp" {
 			return nil, fmt.Errorf("节点 %s 使用XHTTP，请选择Xray核心；sing-box不支持此传输", ib.Remark)
 		}
-		// Hysteria2 / TUIC：QUIC 系协议，入站结构与 vless/trojan 完全不同
-		if quicProtocols[ib.Protocol] {
-			in, err := singBoxQuicInbound(ib)
-			if err != nil {
-				return nil, err
+		in := map[string]any{"type": ib.Protocol, "tag": ib.tag(), "listen": "0.0.0.0", "listen_port": ib.Port}
+		// 一个入站实际监听的所有 tag：主端口一个，Hy2 跳跃端口每个一个。
+		// sing-box 服务端不能直接监听一段，下面按跳跃端口生成影子入站，
+		// 路由规则要对主 tag 和所有影子 tag 都生效，否则跳到影子端口
+		// 的流量会走直连而不是绑定的出口。
+		tags := []string{ib.tag()}
+		if isQUICProtocol(ib.Protocol) {
+			// Hysteria2/TUIC 的 sing-box 入站与 VLESS 那套完全不同：
+			// 没有 transport（QUIC 自带），TLS 是强制的且 ALPN 必须是 h3，
+			// Hy2 只认 users[].password，TUIC 认 users[].uuid + password。
+			// name 沿用 client.Email，这样下面按 auth_user 的分流规则
+			// （按客户端绑出口）对 QUIC 协议同样生效。
+			if ib.TLS == nil {
+				return nil, fmt.Errorf("节点 %s 缺少 TLS 配置，Hysteria2/TUIC 必须使用 TLS", ib.Remark)
 			}
-			ins = append(ins, in)
+			users := []any{}
 			for _, client := range ib.Clients {
-				if !client.Enable || client.BoundTo == "" {
+				if !client.Enable {
 					continue
 				}
-				rule := map[string]any{"inbound": []string{ib.tag()}, "auth_user": []string{client.Email}, "action": "reject", "method": "drop"}
-				if live[client.BoundTo] {
-					rule = map[string]any{"inbound": []string{ib.tag()}, "auth_user": []string{client.Email}, "action": "route", "outbound": xuiTagPrefix + client.BoundTo}
+				user := map[string]any{"name": client.Email, "password": client.Password}
+				if ib.Protocol == "tuic" {
+					user["uuid"] = client.ID
 				}
-				rules = append(rules, rule)
+				users = append(users, user)
 			}
-			if ib.BoundTo != "" {
-				rule := map[string]any{"inbound": []string{ib.tag()}, "action": "reject", "method": "drop"}
-				if live[ib.BoundTo] {
-					rule = map[string]any{"inbound": []string{ib.tag()}, "action": "route", "outbound": xuiTagPrefix + ib.BoundTo}
+			in["users"] = users
+			in["tls"] = map[string]any{"enabled": true, "server_name": ib.TLS.ServerName, "alpn": []string{"h3"}, "certificate_path": ib.TLS.CertFile, "key_path": ib.TLS.KeyFile}
+			if ib.Protocol == "hysteria2" && ib.ObfsPassword != "" {
+				in["obfs"] = map[string]any{"type": "salamander", "password": ib.ObfsPassword}
+			}
+			if ib.Protocol == "tuic" {
+				in["congestion_control"] = "bbr"
+			}
+			ins = append(ins, in)
+			if ib.Protocol == "hysteria2" {
+				hop, err := parseHopPorts(ib.HopPorts)
+				if err != nil {
+					return nil, fmt.Errorf("节点 %s 跳跃端口段无效: %w", ib.Remark, err)
 				}
-				rules = append(rules, rule)
-			}
-			continue
-		}
-		in := map[string]any{"type": ib.Protocol, "tag": ib.tag(), "listen": "0.0.0.0", "listen_port": ib.Port}
-		users := []any{}
-		for _, client := range ib.Clients {
-			if !client.Enable {
-				continue
-			}
-			user := map[string]any{"name": client.Email}
-			if ib.Protocol == "trojan" {
-				user["password"] = client.Password
-			} else {
-				user["uuid"] = client.ID
-				if ib.Protocol == "vless" && client.Flow != "" {
-					user["flow"] = client.Flow
+				for _, p := range hop {
+					if p == ib.Port {
+						continue
+					}
+					shadow := map[string]any{}
+					for k, v := range in {
+						shadow[k] = v
+					}
+					shadow["tag"] = fmt.Sprintf("in-%d-udp", p)
+					shadow["listen_port"] = p
+					ins = append(ins, shadow)
+					tags = append(tags, shadow["tag"].(string))
 				}
 			}
-			users = append(users, user)
-		}
-		in["users"] = users
-		if ib.Security == "tls" && ib.TLS != nil {
-			in["tls"] = map[string]any{"enabled": true, "server_name": ib.TLS.ServerName, "certificate_path": ib.TLS.CertFile, "key_path": ib.TLS.KeyFile}
-		}
-		if ib.Security == "reality" && ib.Reality != nil {
-			host, port, err := net.SplitHostPort(ib.Reality.Dest)
-			if err != nil || len(ib.Reality.ServerNames) == 0 {
-				return nil, fmt.Errorf("节点REALITY目标无效")
+		} else {
+			users := []any{}
+			for _, client := range ib.Clients {
+				if !client.Enable {
+					continue
+				}
+				user := map[string]any{"name": client.Email}
+				if ib.Protocol == "trojan" {
+					user["password"] = client.Password
+				} else {
+					user["uuid"] = client.ID
+					if ib.Protocol == "vless" && client.Flow != "" {
+						user["flow"] = client.Flow
+					}
+				}
+				users = append(users, user)
 			}
-			var number int
-			fmt.Sscanf(port, "%d", &number)
-			in["tls"] = map[string]any{"enabled": true, "server_name": ib.Reality.ServerNames[0], "reality": map[string]any{"enabled": true, "handshake": map[string]any{"server": host, "server_port": number}, "private_key": ib.Reality.PrivateKey, "short_id": ib.Reality.ShortIDs}}
-		}
-		switch ib.netOrTCP() {
-		case "ws":
-			transport := map[string]any{"type": "ws", "path": ib.Path}
-			if ib.Host != "" {
-				transport["headers"] = map[string][]string{"Host": {ib.Host}}
+			in["users"] = users
+			if ib.Security == "tls" && ib.TLS != nil {
+				in["tls"] = map[string]any{"enabled": true, "server_name": ib.TLS.ServerName, "certificate_path": ib.TLS.CertFile, "key_path": ib.TLS.KeyFile}
 			}
-			in["transport"] = transport
-		case "grpc":
-			in["transport"] = map[string]any{"type": "grpc", "service_name": strings.TrimPrefix(ib.Path, "/")}
-		case "httpupgrade":
-			in["transport"] = map[string]any{"type": "httpupgrade", "path": ib.Path, "host": ib.Host}
+			if ib.Security == "reality" && ib.Reality != nil {
+				host, port, err := net.SplitHostPort(ib.Reality.Dest)
+				if err != nil || len(ib.Reality.ServerNames) == 0 {
+					return nil, fmt.Errorf("节点REALITY目标无效")
+				}
+				var number int
+				fmt.Sscanf(port, "%d", &number)
+				in["tls"] = map[string]any{"enabled": true, "server_name": ib.Reality.ServerNames[0], "reality": map[string]any{"enabled": true, "handshake": map[string]any{"server": host, "server_port": number}, "private_key": ib.Reality.PrivateKey, "short_id": ib.Reality.ShortIDs}}
+			}
+			switch ib.netOrTCP() {
+			case "ws":
+				transport := map[string]any{"type": "ws", "path": ib.Path}
+				if ib.Host != "" {
+					transport["headers"] = map[string][]string{"Host": {ib.Host}}
+				}
+				in["transport"] = transport
+			case "grpc":
+				in["transport"] = map[string]any{"type": "grpc", "service_name": strings.TrimPrefix(ib.Path, "/")}
+			case "httpupgrade":
+				in["transport"] = map[string]any{"type": "httpupgrade", "path": ib.Path, "host": ib.Host}
+			}
+			ins = append(ins, in)
 		}
-		ins = append(ins, in)
 		for _, client := range ib.Clients {
 			if !client.Enable || client.BoundTo == "" {
 				continue
 			}
-			rule := map[string]any{"inbound": []string{ib.tag()}, "auth_user": []string{client.Email}, "action": "reject", "method": "drop"}
+			rule := map[string]any{"inbound": tags, "auth_user": []string{client.Email}, "action": "reject", "method": "drop"}
 			if live[client.BoundTo] {
-				rule = map[string]any{"inbound": []string{ib.tag()}, "auth_user": []string{client.Email}, "action": "route", "outbound": xuiTagPrefix + client.BoundTo}
+				rule = map[string]any{"inbound": tags, "auth_user": []string{client.Email}, "action": "route", "outbound": xuiTagPrefix + client.BoundTo}
 			}
 			rules = append(rules, rule)
 		}
 		if ib.BoundTo != "" {
-			rule := map[string]any{"inbound": []string{ib.tag()}, "action": "reject", "method": "drop"}
+			rule := map[string]any{"inbound": tags, "action": "reject", "method": "drop"}
 			if live[ib.BoundTo] {
-				rule = map[string]any{"inbound": []string{ib.tag()}, "action": "route", "outbound": xuiTagPrefix + ib.BoundTo}
+				rule = map[string]any{"inbound": tags, "action": "route", "outbound": xuiTagPrefix + ib.BoundTo}
 			}
 			rules = append(rules, rule)
 		}
 	}
 	return map[string]any{"log": map[string]any{"level": "warn"}, "inbounds": ins, "outbounds": outs, "route": map[string]any{"rules": rules, "final": "direct"}}, nil
-}
-
-// singBoxQuicInbound 生成 Hysteria2 / TUIC 的 sing-box 入站。
-//
-// 两点与 vless/trojan 不同：
-//   - 认证结构不同：Hysteria2 每用户是 {password}，TUIC 是 {uuid, password}；
-//   - TLS 内置于 QUIC 握手，必须提供证书对（复用 buildTLS 的自签/用户证书逻辑，
-//     证书在 CreateInbound 阶段已生成并落在 ib.TLS 上）。
-func singBoxQuicInbound(ib *nativeInbound) (map[string]any, error) {
-	if ib.TLS == nil {
-		return nil, fmt.Errorf("节点 %s 缺少TLS证书配置，无法启动 %s 入站", ib.Remark, ib.Protocol)
-	}
-	in := map[string]any{"type": ib.Protocol, "tag": ib.tag(), "listen": "::", "listen_port": ib.Port}
-	users := []any{}
-	for _, client := range ib.Clients {
-		if !client.Enable {
-			continue
-		}
-		switch ib.Protocol {
-		case "hysteria2":
-			users = append(users, map[string]any{"name": client.Email, "password": client.Password})
-		case "tuic":
-			users = append(users, map[string]any{"name": client.Email, "uuid": client.ID, "password": client.Password})
-		}
-	}
-	in["users"] = users
-	if ib.Protocol == "tuic" {
-		in["congestion_control"] = "bbr"
-		in["udp_relay_mode"] = "native"
-	}
-	tls := map[string]any{
-		"enabled":           true,
-		"certificate_path":  ib.TLS.CertFile,
-		"key_path":          ib.TLS.KeyFile,
-	}
-	if ib.Protocol == "tuic" {
-		tls["alpn"] = []string{"h3"}
-	}
-	if ib.TLS.ServerName != "" && ib.TLS.ServerName != "localhost" {
-		tls["server_name"] = ib.TLS.ServerName
-	}
-	in["tls"] = tls
-	return in, nil
 }
 
 func (p *xrayProc) kind() string {

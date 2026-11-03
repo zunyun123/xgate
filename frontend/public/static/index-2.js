@@ -600,13 +600,31 @@ function syncNodeForm(){
   const proto = $('#nproto').value;
   let net     = $('#nnet').value;
   const sec   = $('#nsec').value;
-
-  // Hysteria2 / TUIC 基于 QUIC：无传输/安全层可选，且需要 sing-box 核心
-  const isQuic = proto === 'hysteria2' || proto === 'tuic';
-  for(const option of $('#nnet').options){ option.disabled = isQuic || (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
+  const isQUIC = proto === 'hysteria2' || proto === 'tuic';
+  if(isQUIC){
+    $('#nnet').value = 'udp'; net = 'udp';
+    for(const option of $('#nnet').options){ option.disabled = option.value !== 'udp'; }
+    const secSel = $('#nsec');
+    for(const o of secSel.options){ o.disabled = o.value !== 'tls'; }
+    secSel.value = 'tls';
+    $('#nsniwrap').hidden  = false;
+    $('#ncertificatewrap').hidden = false;
+    $('#ncertwrap').hidden = $('#ncertificate').value !== 'manual';
+    $('#nkeywrap').hidden = $('#ncertificate').value !== 'manual';
+    $('#ndestwrap').hidden = true;
+    $('#nvisionwrap').hidden = true;
+    $('#nvision').checked = false;
+    $('#npathwrap').hidden = true;
+    const isHy2 = proto === 'hysteria2';
+    $('#nobfswrap').hidden = !isHy2;
+    $('#nhopwrap').hidden = !isHy2;
+    if(!isHy2){ $('#nobfs').value = ''; $('#nhop').value = ''; }
+    $('#nsechint').textContent = 'Hysteria2/TUIC 强制 UDP + TLS，仅自建 sing-box 后端可用（Xray/3x-ui/S-UI 会直接报错）。放行 UDP 端口；绑定出口后流量走该出口的 SOCKS5（VPN Gate 家宽），未绑定则直连。Hy2 混淆/跳跃填了就生效，旧节点不会自动改，要升级请新建。';
+    return;
+  }
+  // REALITY 靠模仿 TLS 握手工作，套在自带头部的传输上没有意义
+  for(const option of $('#nnet').options){ option.disabled = (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
   if($('#nnet').selectedOptions[0].disabled) { $('#nnet').value = 'tcp'; net = 'tcp'; }
-  for(const option of $('#nsec').options){ option.disabled = isQuic; }
-  $('#nsechint').textContent = isQuic ? 'QUIC 协议：TLS 内置，需 sing-box 核心；端口走 UDP。' : '';
   const realityOK = net === 'tcp' || net === 'xhttp' || net === 'grpc';
   const secSel = $('#nsec');
   for(const o of secSel.options){
@@ -633,6 +651,8 @@ $('#ncertwrap').hidden = cur !== 'tls' || $('#ncertificate').value !== 'manual';
   $('#nsechint').textContent =
     cur === 'reality' ? '密钥与 shortId 自动生成' :
     cur === 'tls' ? '优先使用已绑定域名与证书；自签证书链接带指纹。' : '';
+  $('#nobfswrap').hidden = true;
+  $('#nhopwrap').hidden = true;
 }
 $('#nproto').onchange = syncNodeForm;
 $('#nnet').onchange = syncNodeForm;
@@ -653,6 +673,10 @@ $('#ncreate').onclick = async e => {
     dest:     ($('#ndest').value || '').trim(),
   });
   if($('#nvision').checked) q.set('vision', '1');
+  if($('#nproto').value === 'hysteria2'){
+    q.set('obfs_password', ($('#nobfs').value || '').trim());
+    q.set('hop_ports', ($('#nhop').value || '').trim());
+  }
   const selection = ($('#ncertificate').value || 'auto').split('|');
   if($('#nsec').value === 'tls'){
     q.set('certificate_mode', selection[0] === 'manual' || selection[0] === 'self_signed' ? selection[0] : 'auto');

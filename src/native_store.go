@@ -16,8 +16,8 @@ import (
 type nativeClient struct {
 	BoundTo  string `json:"bound_to,omitempty"`
 	Email    string `json:"email"`
-	ID       string `json:"id"`       // vless/vmess 用 UUID
-	Password string `json:"password"` // trojan 用密码
+	ID       string `json:"id"`       // vless/tuic 用 UUID
+	Password string `json:"password"` // trojan/hysteria2 用密码
 	Enable   bool   `json:"enable"`
 	// Flow 只对 VLESS 有意义，取值 "" 或 xtls-rprx-vision。
 	// Vision 要求底层是 TCP + TLS/REALITY，其他组合下 Xray 会直接拒绝启动。
@@ -30,10 +30,18 @@ type nativeClient struct {
 type nativeInbound struct {
 	ID       int    `json:"id"`
 	Port     int    `json:"port"`
-	Protocol string `json:"protocol"` // vless | vmess | trojan | hysteria2 | tuic
+	Protocol string `json:"protocol"` // vless | trojan | hysteria2 | tuic
 	Network  string `json:"network"`  // tcp | ws | grpc | httpupgrade | xhttp | udp（仅 hysteria2/tuic）
-	Path     string `json:"path"`     // ws/httpupgrade/xhttp 路径，grpc 用作 serviceName
-	Host     string `json:"host"`     // ws/httpupgrade/xhttp 的 Host 头
+	// ObfsPassword 是 Hysteria2 的 Salamander 混淆口令，留空表示不混淆。
+	// 只有 hysteria2 能用它，其他协议填了会在新建时直接报错，不会静默丢掉。
+	ObfsPassword string `json:"obfs_password,omitempty"`
+	// HopPorts 是 Hysteria2 的跳跃端口段，如 "30010-30020"。
+	// 这里存的是主端口之外的附加端口，分享链接里写成 主端口,跳跃段。
+	// sing-box 服务端不能直接监听一段，生成配置时会为每个跳跃端口
+	// 再生成一个同配置的影子入站，所以段里端口不能和任何入站主端口撞车。
+	HopPorts string `json:"hop_ports,omitempty"`
+	Path     string `json:"path"` // ws/httpupgrade/xhttp 路径，grpc 用作 serviceName
+	Host     string `json:"host"` // ws/httpupgrade/xhttp 的 Host 头
 	// Security 是传输层安全：none | tls | reality
 	Security string         `json:"security"`
 	TLS      *tlsConfig     `json:"tls,omitempty"`
@@ -144,6 +152,13 @@ func (s *nativeStore) usedPorts() map[int]bool {
 	used := externalUsedPorts()
 	for _, ib := range s.Inbounds {
 		used[ib.Port] = true
+		// 跳跃端口同样是真实监听端口，随机分配主端口时也要避开，
+		// 否则新入站的主端口会和别人的跳跃端口撞车。
+		if hop, err := parseHopPorts(ib.HopPorts); err == nil {
+			for _, p := range hop {
+				used[p] = true
+			}
+		}
 	}
 	return used
 }

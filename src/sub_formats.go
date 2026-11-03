@@ -15,9 +15,17 @@ type subscriptionNode struct {
 	Name, Protocol, Server, UUID, Username, Password           string
 	Security, ServerName, Fingerprint, PublicKey, ShortID, Pin string
 	Network, Path, Host, Flow, Cipher, Encryption              string
-	Port, AlterID                                              int
-	ALPN                                                       []string
-	Insecure                                                   bool
+	// QUIC 协议专用：Hy2 的混淆、TUIC 的拥塞控制。
+	// 没有它们时订阅转换会用 Hy2 无混淆 / TUIC bbr 的默认值。
+	CongestionControl, Obfs, ObfsPassword string
+	// HopPorts 是 Hy2 链接端口段里的跳跃段，如 "30010-30020"，
+	// 来自 hysteria2://口令@host:主端口,跳跃段 这种多端口格式。
+	// TUIC 不支持跳跃，解析时填了会被忽略而不是报错（外部链接
+	// 的容错），服务端生成时 TUIC 填跳跃段是直接报错的。
+	HopPorts      string
+	Port, AlterID int
+	ALPN          []string
+	Insecure      bool
 }
 
 func decodeSubscriptionBase64(raw string) ([]byte, error) {
@@ -63,19 +71,63 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 			n.ALPN = strings.Split(value("alpn"), ",")
 		}
 	} else {
-		u, err := url.Parse(raw)
+		// Hy2 多端口链接在 Go 的 url.Parse 里本身就是非法的
+		// （端口段带逗号），解析前先把跳跃段拆出来：主端口留下
+		// 给 url.Parse，跳跃段记在 hopPortsFromLink 里，解析完再贴回去。
+		hopPortsFromLink := ""
+		rawForParse := raw
+		if strings.HasPrefix(raw, "hysteria2://") || strings.HasPrefix(raw, "hy2://") {
+			if idx := strings.Index(raw, "://"); idx >= 0 {
+				rest := raw[idx+3:]
+				end := len(rest)
+				for i, c := range rest {
+					if c == '?' || c == '#' || c == '/' {
+						end = i
+						break
+					}
+				}
+				authority, remainder := rest[:end], rest[end:]
+				hostport := authority
+				userinfo := ""
+				if at := strings.LastIndex(authority, "@"); at >= 0 {
+					userinfo, hostport = authority[:at+1], authority[at+1:]
+				}
+				if strings.Contains(hostport, ",") {
+					parts := strings.SplitN(hostport, ",", 2)
+					hopPortsFromLink = parts[1]
+					rawForParse = raw[:idx+3] + userinfo + parts[0] + remainder
+				}
+			}
+		}
+		u, err := url.Parse(rawForParse)
 		if err != nil {
 			return n, fmt.Errorf("节点链接无法解析")
+		}
+		if hopPortsFromLink != "" {
+			n.HopPorts = hopPortsFromLink
 		}
 		n.Protocol = strings.ToLower(u.Scheme)
 		if n.Protocol == "socks" || n.Protocol == "sock5" {
 			n.Protocol = "socks5"
 		}
+		if n.Protocol == "hy2" {
+			n.Protocol = "hysteria2"
+		}
 		n.Name, n.Server = u.Fragment, u.Hostname()
 		if (n.Protocol == "http" || n.Protocol == "https" || n.Protocol == "socks5" || n.Protocol == "sock5" || n.Protocol == "socks") && u.Path != "" && u.Path != "/" {
 			return n, fmt.Errorf("请填写代理分享链接；CSV来源请在来源入口添加")
 		}
-		n.Port, _ = strconv.Atoi(u.Port())
+		// Hy2 链接的端口段可以是多端口格式：主端口,跳跃段。
+		// u.Port() 会原样返回 "30001,30010-30020"，Atoi 失败就
+		// 会把端口丢成 0，所以这里先拆开：第一段是主端口，
+		// 剩下的是跳跃段，交给后面的客户端转换用。
+		if n.Protocol == "hysteria2" && strings.Contains(u.Port(), ",") {
+			parts := strings.SplitN(u.Port(), ",", 2)
+			n.Port, _ = strconv.Atoi(parts[0])
+			n.HopPorts = parts[1]
+		} else {
+			n.Port, _ = strconv.Atoi(u.Port())
+		}
 		if n.Port == 0 && n.Protocol == "http" {
 			n.Port = 80
 		}
@@ -102,17 +154,46 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if alpn := q.Get("alpn"); alpn != "" {
 			n.ALPN = strings.Split(alpn, ",")
 		}
-		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1"
+		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("allow_insecure") == "1" || q.Get("allow_insecure") == "true" || q.Get("insecure") == "1"
+		n.CongestionControl = q.Get("congestion_control")
+		if n.CongestionControl == "" {
+			n.CongestionControl = q.Get("congestion-controller")
+		}
+		n.Obfs, n.ObfsPassword = q.Get("obfs"), q.Get("obfs-password")
+		if n.ObfsPassword == "" && strings.Contains(n.Obfs, ":") {
+			// 有些客户端把混淆写成 obfs=salamander:口令，这里拆开，
+			// 免得转换到 sing-box/Clash 时把口令当成混淆类型。
+			parts := strings.SplitN(n.Obfs, ":", 2)
+			n.Obfs, n.ObfsPassword = parts[0], parts[1]
+		}
 		if u.User != nil {
 			n.Username = u.User.Username()
 			n.Password, _ = u.User.Password()
 		}
 		switch n.Protocol {
-		case "vless", "vmess", "tuic":
-			n.UUID = n.Username
 		case "hysteria2":
-			// hysteria2://password@host:port — 密码在 username 位（链接里没有冒号分隔）
-			n.Password = n.Username
+			// Hy2 链接通常只有口令：hysteria2://口令@host:port。
+			// userpass 形式 hysteria2://名:口令@… 时 Username 是名、Password 是口令。
+			if n.Password == "" {
+				n.Password = n.Username
+			}
+			n.Username = ""
+			n.Network = "udp"
+			if n.Security == "" {
+				n.Security = "tls"
+			}
+		case "tuic":
+			// TUIC 链接是 tuic://uuid:口令@host:port。
+			n.UUID = n.Username
+			n.Username = ""
+			n.Network = "udp"
+			if n.Security == "" {
+				n.Security = "tls"
+			}
+		}
+		switch n.Protocol {
+		case "vless", "vmess":
+			n.UUID = n.Username
 		case "trojan":
 			n.Password = n.Username
 			if n.Security == "" {
@@ -157,24 +238,29 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if n.UUID == "" {
 			return n, fmt.Errorf("缺少节点UUID")
 		}
-	case "hysteria2", "tuic":
+	case "trojan", "ss":
 		if n.Password == "" {
 			return n, fmt.Errorf("缺少节点密码")
 		}
-		if n.Protocol == "tuic" && n.UUID == "" {
+	case "hysteria2":
+		if n.Password == "" {
+			return n, fmt.Errorf("缺少节点密码")
+		}
+		if n.HopPorts != "" {
+			if _, err := parseHopPorts(n.HopPorts); err != nil {
+				return n, err
+			}
+		}
+	case "tuic":
+		if n.UUID == "" {
 			return n, fmt.Errorf("缺少节点UUID")
 		}
-		// QUIC 系协议 TLS 内置，链接里没有 security 字段
-		if n.Security == "none" {
-			n.Security = "tls"
-		}
-	case "trojan", "ss":
 		if n.Password == "" {
 			return n, fmt.Errorf("缺少节点密码")
 		}
 	case "socks5", "http":
 	default:
-		return n, fmt.Errorf("支持VLESS、VMess、Trojan、SS、Hysteria2、TUIC、SOCKS5和HTTP链接")
+		return n, fmt.Errorf("支持VLESS、VMess、Trojan、SS、SOCKS5、HTTP、Hysteria2和TUIC链接")
 	}
 	if n.Security != "none" && n.Security != "tls" && n.Security != "reality" {
 		return n, fmt.Errorf("不支持的安全层")
@@ -313,26 +399,53 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 		v["password"] = n.Password
 		v["cipher"] = n.Cipher
 		v["udp"] = true
-	case "hysteria2":
-		v["password"] = n.Password
-		v["udp"] = true
-		if n.Insecure {
-			v["skip-cert-verify"] = true
-		}
-	case "tuic":
-		v["uuid"] = n.UUID
-		v["password"] = n.Password
-		v["udp"] = true
-		v["congestion-controller"] = "bbr"
-		v["alpn"] = []string{"h3"}
-		if n.Insecure {
-			v["skip-cert-verify"] = true
-		}
 	case "http", "socks5":
 		if n.Username != "" {
 			v["username"] = n.Username
 			v["password"] = n.Password
 		}
+	case "hysteria2":
+		// Clash/Mihomo 的 hysteria2 不走下面那套 vless 传输/安全层：
+		// 它没有 network/ws 字段，SNI 字段就叫 sni，不是 servername。
+		v["password"] = n.Password
+		v["udp"] = true
+		if n.Obfs != "" {
+			v["obfs"] = n.Obfs
+			v["obfs-password"] = n.ObfsPassword
+		}
+		if n.HopPorts != "" {
+			// Mihomo 用 ports 字段接跳跃段，port 仍是主端口。
+			v["ports"] = n.HopPorts
+		}
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["udp"] = true
+		if n.CongestionControl != "" {
+			v["congestion-controller"] = n.CongestionControl
+		} else {
+			v["congestion-controller"] = "bbr"
+		}
+		v["udp-relay-mode"] = "native"
+	}
+	if isQUICProtocol(n.Protocol) {
+		// QUIC 协议在 Clash 里就是上面 + TLS 字段，直接返回，
+		// 别再掉进下面的 network switch（udp 会被当成不支持的传输）。
+		if n.ServerName != "" {
+			v["sni"] = n.ServerName
+		}
+		if n.Insecure {
+			v["skip-cert-verify"] = true
+		}
+		if n.Pin != "" {
+			v["fingerprint"] = strings.ReplaceAll(n.Pin, ":", "")
+		}
+		if len(n.ALPN) > 0 {
+			v["alpn"] = n.ALPN
+		} else {
+			v["alpn"] = []string{"h3"}
+		}
+		return v, nil
 	}
 	if n.Security != "none" {
 		v["tls"] = true
@@ -359,11 +472,6 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 	}
 	switch n.Network {
 	case "tcp":
-	case "udp":
-		// Hysteria2 / TUIC 等 QUIC 协议：clash/sing-box 出口无需 transport 配置
-		if _, ok := map[string]bool{"hysteria2": true, "tuic": true}[n.Protocol]; !ok {
-			return nil, fmt.Errorf("%s: Clash格式不支持此传输，请使用通用/V2Ray订阅", n.Name)
-		}
 	case "ws", "httpupgrade":
 		v["network"] = "ws"
 		opts := map[string]any{"path": n.Path}
@@ -409,13 +517,6 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 	case "ss":
 		v["password"] = n.Password
 		v["method"] = n.Cipher
-	case "hysteria2":
-		v["password"] = n.Password
-	case "tuic":
-		v["uuid"] = n.UUID
-		v["password"] = n.Password
-		v["congestion_control"] = "bbr"
-		v["udp_relay_mode"] = "native"
 	case "socks5", "http":
 		if n.Username != "" {
 			v["username"] = n.Username
@@ -424,6 +525,56 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		if n.Protocol == "socks5" {
 			v["version"] = "5"
 		}
+	}
+	if isQUICProtocol(n.Protocol) {
+		// sing-box 客户端的 QUIC 出站同样没有 transport：
+		// Hy2 是 password + TLS，TUIC 是 uuid + password + 拥塞控制。
+		tls := map[string]any{"enabled": true, "server_name": n.ServerName}
+		if n.Insecure {
+			tls["insecure"] = true
+		}
+		if len(n.ALPN) > 0 {
+			tls["alpn"] = n.ALPN
+		} else {
+			tls["alpn"] = []string{"h3"}
+		}
+		if n.Pin != "" {
+			pin, err := hex.DecodeString(strings.ReplaceAll(n.Pin, ":", ""))
+			if err != nil || len(pin) != 32 {
+				return nil, fmt.Errorf("证书指纹格式无效")
+			}
+			tls["certificate_sha256"] = []string{base64.StdEncoding.EncodeToString(pin)}
+		}
+		v["tls"] = tls
+		switch n.Protocol {
+		case "hysteria2":
+			v["password"] = n.Password
+			if n.Obfs != "" {
+				v["obfs"] = map[string]any{"type": n.Obfs, "password": n.ObfsPassword}
+			}
+			if n.HopPorts != "" {
+				// sing-box 客户端用 server_ports 跳跃：主端口 + 跳跃段，
+				// server_port 设了 server_ports 后会被忽略，间隔默认 30s。
+				serverPorts := []string{strconv.Itoa(n.Port)}
+				for _, p := range strings.Split(n.HopPorts, ",") {
+					if p = strings.TrimSpace(p); p != "" {
+						serverPorts = append(serverPorts, p)
+					}
+				}
+				v["server_ports"] = serverPorts
+				v["hop_interval"] = "30s"
+			}
+		case "tuic":
+			v["uuid"] = n.UUID
+			v["password"] = n.Password
+			if n.CongestionControl != "" {
+				v["congestion_control"] = n.CongestionControl
+			} else {
+				v["congestion_control"] = "bbr"
+			}
+			v["udp_relay_mode"] = "native"
+		}
+		return v, nil
 	}
 	if n.Security != "none" {
 		tls := map[string]any{"enabled": true, "server_name": n.ServerName}
@@ -450,11 +601,6 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 	}
 	switch n.Network {
 	case "tcp":
-	case "udp":
-		// Hysteria2 / TUIC 等 QUIC 协议：sing-box 出口无需 transport 配置
-		if _, ok := map[string]bool{"hysteria2": true, "tuic": true}[n.Protocol]; !ok {
-			return nil, fmt.Errorf("%s: sing-box不支持此传输，请使用通用/V2Ray订阅", n.Name)
-		}
 	case "ws":
 		tr := map[string]any{"type": "ws", "path": n.Path}
 		if n.Host != "" {

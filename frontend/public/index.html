@@ -126,13 +126,12 @@
       </button>
     </div>
     <div class="body">
-      <details style="margin-bottom:16px"><summary>粘贴本 VPS 已生成的节点链接</summary><label class="f"><span>分享链接（每行一个）</span><textarea id="nimport" rows="3" placeholder="vless://… 或 vmess://…、trojan://…、socks5://…、http://…"></textarea></label><div class="hint">核对本 VPS 的发布地址、监听端口和凭据；识别现有入口后可用于批量创建出口。</div><button id="nimportConfirm">确认识别</button><div class="hint" id="nimportHint"></div></details>
+      <details style="margin-bottom:16px"><summary>粘贴本 VPS 已生成的节点链接</summary><label class="f"><span>分享链接（每行一个）</span><textarea id="nimport" rows="3" placeholder="vless://…、trojan://…、hysteria2://…、tuic://…、socks5://…、http://…（VMess 已移除，不再新建）"></textarea></label><div class="hint">核对本 VPS 的发布地址、监听端口和凭据；识别现有入口后可用于批量创建出口。</div><button id="nimportConfirm">确认识别</button><div class="hint" id="nimportHint"></div></details>
 
       <label class="f">
         <span>协议</span>
         <select id="nproto">
           <option value="vless">VLESS</option>
-          <option value="vmess">VMess</option>
           <option value="trojan">Trojan</option>
           <option value="hysteria2">Hysteria2</option>
           <option value="tuic">TUIC</option>
@@ -142,6 +141,7 @@
         <span>传输</span>
         <select id="nnet">
           <option value="tcp">TCP</option>
+          <option value="udp">UDP（QUIC，仅 Hysteria2/TUIC）</option>
           <option value="ws">WebSocket</option>
           <option value="grpc">gRPC</option>
           <option value="httpupgrade">HTTPUpgrade</option>
@@ -180,6 +180,14 @@
       <label class="f" id="npathwrap" hidden>
         <span id="npathlabel">路径</span>
         <input id="npath" type="text" placeholder="留空自动生成">
+      </label>
+      <label class="f" id="nobfswrap" hidden>
+        <span>Salamander 混淆口令（仅 Hysteria2）</span>
+        <input id="nobfs" type="text" placeholder="留空 = 不混淆；填了客户端也要填同样的口令">
+      </label>
+      <label class="f" id="nhopwrap" hidden>
+        <span>端口跳跃段（仅 Hysteria2）</span>
+        <input id="nhop" type="text" placeholder="留空 = 不跳跃，如 30010-30020；最多 32 个端口，需单独放行 UDP">
       </label>
       <label class="f">
         <span>端口</span>

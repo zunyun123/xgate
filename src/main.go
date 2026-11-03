@@ -944,6 +944,9 @@ func apiInboundCreate(m *Manager) http.HandlerFunc {
 			Security: q.Get("security"),
 			Vision:   q.Get("vision") == "1",
 
+			ObfsPassword: q.Get("obfs_password"),
+			HopPorts:     q.Get("hop_ports"),
+
 			ServerName: q.Get("sni"),
 			CertFile:   q.Get("cert"),
 			KeyFile:    q.Get("key"),

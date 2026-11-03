@@ -1,14 +1,23 @@
 # 更新记录
 
-## v0.2.7（未发布）— Hysteria2 / TUIC 输出
+## 未发布 — Hysteria2 / TUIC 输出（自建 sing-box 后端）
 
-参考 AimiliVPN 的「统一落地出口 + sing-box 协议封装」思路，自建模式（Native，sing-box 核心）新增两种 QUIC 协议入站，客户端可直接订阅到 `hysteria2://` / `tuic://` 节点：
-
-- **协议支持**：`CreateInbound` 接受 `hysteria2`（密码认证）与 `tuic`（UUID+密码，BBR，native UDP 中继）；两者基于 QUIC，传输固定 `udp`、TLS 内置，仅 sing-box 核心可用（xray 核心会明确报错引导切换）。
-- **证书**：复用现有 TLS 体系——自签证书自动生成并落盘，分享链接相应带 `insecure=1`（Hy2）/ `allow_insecure=1`（TUIC）；绑定域名证书则带 `sni`。
-- **订阅**：`shareLink` 输出标准 `hysteria2://` / `tuic://` 链接；订阅解析器可识别导入这两种链接；clash/mihomo 与 sing-box 订阅格式均含对应出口字段。
-- **界面**：新建节点协议下拉新增 Hysteria2 / TUIC；选中后传输与安全层自动锁定为 QUIC 语义并提示需 sing-box 核心。
-- **测试**：新增 `dev41_quic_test.go`（入站校验、sing-box 配置结构、分享链接格式、订阅解析与 clash/sing-box 导出往返），全部通过；`go vet` 干净。
+- 新增 Hysteria2 / TUIC 入站：UDP + TLS 固定组合，sing-box 入站
+  （Hy2 口令、TUIC UUID+口令+bbr、TLS ALPN h3），出站走绑定出口的
+  SOCKS5 隧道，复用现有按出口/按客户端的路由规则。详见
+  `docs/HYSTERIA_TUIC.md`。
+- 分享链接与订阅（通用、明文、Clash、sing-box）均支持 Hy2/TUIC；
+  Xray / 3x-ui / S-UI 后端明确拒绝，不会静默写坏配置。
+- 随机端口同时查 TCP/UDP，手填 QUIC 端口先查 UDP 占用；面板表单
+  选 Hy2/TUIC 时自动锁定 UDP+TLS。
+- Hysteria2 新增 Salamander 混淆与端口跳跃：混淆口令填了就落到
+  sing-box 入站、分享链接与订阅里；跳跃段用主端口 + 影子入站实现
+  （sing-box 服务端不能直接监听一段，实测已证实），分享链接写成
+  官方多端口格式，Clash 用 `ports`、sing-box 客户端用 `server_ports`。
+  模板克隆时混淆口令照抄、跳跃段按出口重新分配，旧节点不会自动改。
+- VMess 已移除：不再新建，残留已启用 VMess 入站会在生成配置时
+  被明确拦住，订阅与详情不再输出 VMess 链接；订阅解析仍能识别
+  外部 VMess 链接，仅用于导入/转换。
 
 ## v0.2.6 — 前后端分离与自动端口
 

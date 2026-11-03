@@ -604,14 +604,14 @@ func (s *SUIPanel) DeleteInbounds(ids []int, tunnels []*Tunnel) error {
 	return s.resync(tunnels)
 }
 func (s *SUIPanel) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*CreatedInbound, error) {
+	// S-UI 的客户端是独立的 profile 模型，本次只给自建 sing-box 做了
+	// Hy2/TUIC 的 users 映射，S-UI 这边不猜它的 profile 格式，明确拒绝
+	// 比生成一个认证对不上的入站好。
+	if isQUICProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
+		return nil, fmt.Errorf("Hysteria2/TUIC 只支持自建 sing-box 后端，S-UI 后端暂不支持")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// S-UI 这条路会把 inbound 的 users 剥掉、走面板自己的用户体系，
-	// Hy2/TUIC 的凭据恰恰就放在 users 里，剥掉就等于建了个登不上的入站。
-	// 所以在这里直接拦住，让用户用自建 sing-box 模式。
-	if isRelayProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
-		return nil, fmt.Errorf("%s 请在自建 sing-box 模式下创建，S-UI 接管模式不支持", spec.Protocol)
-	}
 	snapshot, err := s.load()
 	if err != nil {
 		return nil, err
