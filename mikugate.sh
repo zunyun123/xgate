@@ -8,7 +8,7 @@
 # 占位没换就直接报错停下，避免悄悄又装回上游版本。
 set -euo pipefail
 repo="${MIKU_GATE_REPO:-zunyun123/xgate}"
-if [[ "$repo" == zunyun123/* ]]; then
+if [[ "$repo" == YOUR_GITHUB_USER/* ]]; then
   echo '请先把 mikugate.sh 里的 YOUR_GITHUB_USER 换成你自己的 GitHub 用户名，或设置 MIKU_GATE_REPO=你的用户名/miku-gate 再运行。' >&2
   exit 1
 fi
