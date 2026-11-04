@@ -1,14 +1,15 @@
 # Miku Gate
 
+> 自用版：本包已去掉 VMess、加上 Hysteria2 / TUIC，安装与更新
+> 指向已改成可配置的自用仓库，不再默认指向上游。
+> 发布前在全包搜索 `YOUR_GITHUB_USER` 换成你自己的 GitHub 用户名，
+> 详见 [docs/SELFUSE_REPO.md](docs/SELFUSE_REPO.md)。
+
 ## VPN Gate 是什么？
 
 [VPN Gate](https://www.vpngate.net/) 是日本筑波大学开展的学术实验项目，由世界各地志愿者提供公共 VPN 中继。Miku Gate 使用其公开的 OpenVPN 配置，为自己的 Linux VPS 管理多个出口。
 
 VPN Gate 不属于 Miku Gate。节点数量、国家、在线时间随时变化，**不保证住宅 IP、固定出口、在线率或严格隐私，也不是无日志服务**。请阅读[官方介绍](https://www.vpngate.net/en/about_overview.aspx)与[日志和反滥用政策](https://www.vpngate.net/en/about_abuse.aspx)，遵守当地法律与服务商规则。
-
-## Hysteria2 / TUIC 协议桥
-
-本仓库附带一个独立 sing-box 协议桥，可将 Hysteria2/TUIC 入站通过 y-gate 的认证 SOCKS5 代理出口转发。它是旁路侧车，并非 y-gate 面板内原生的节点管理协议；需另行准备公网 UDP 入口和有效 TLS 证书。部署步骤、限制和配置生成器见 [`deploy/protocol-bridge`](deploy/protocol-bridge/README.md)。
 
 ## 感谢 fanout
 
@@ -19,7 +20,7 @@ VPN Gate 不属于 Miku Gate。节点数量、国家、在线时间随时变化�
 <p align="center"><img src="src/assets/miku-hero-v1.png" alt="Miku Gate 插画" width="260"></p>
 <h2 align="center">世界，等你连接。</h2>
 
-**代码版本：v0.2.6**，正式状态以 [Releases](https://github.com/vioIetMiku/miku-gate/releases/latest) 为准。支持 Linux amd64 / arm64；完整安装包已编译，VPS 无需安装 Go。
+**代码版本：v0.2.6**，正式状态以 [Releases](https://github.com/YOUR_GITHUB_USER/miku-gate/releases/latest) 为准。支持 Linux amd64 / arm64；完整安装包已编译，VPS 无需安装 Go。
 
 ## 先选一种安装方式，不要把下面的命令全部执行
 
@@ -38,7 +39,7 @@ VPN Gate 不属于 Miku Gate。节点数量、国家、在线时间随时变化�
 这条路线**不需要 Docker、Compose、Node.js，也不需要提前安装 Go**。程序安装到 VPS，由 systemd / OpenRC 管理；网页由后端内嵌提供。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vioIetMiku/miku-gate/main/mikugate.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/miku-gate/main/mikugate.sh)
 ```
 
 **作用：**下载最新正式包、验证 SHA256 和文件清单，准备系统依赖和核心，然后安装、启动原生服务。这个命令不带 `--docker`，不会部署 Docker 容器。
@@ -96,7 +97,7 @@ python3 --version
 **在哪里做：**同一台 VPS root Bash，当前目录不限。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vioIetMiku/miku-gate/main/mikugate.sh) --docker
+bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/miku-gate/main/mikugate.sh) --docker
 ```
 
 **作用：**验证正式安装包，将部署文件保存到 `/opt/miku-gate-docker`，构建或复用后端镜像，再启动后端与独立前端。v0.2.6 中默认就是分离部署，不需要另外再装一套前端。
@@ -332,7 +333,7 @@ python3 -B scripts/frontend.py restart
 
 ### 第 1 步：在本地下载，再上传到 VPS
 
-从 [v0.2.6 Release](https://github.com/vioIetMiku/miku-gate/releases/tag/v0.2.6) 下载文件和 `SHA256SUMS`。该版本尚未发布时不要使用不存在的下载地址；可先使用你已经拿到的完整安装包，或等待正式发布。
+从 [v0.2.6 Release](https://github.com/YOUR_GITHUB_USER/miku-gate/releases/tag/v0.2.6) 下载文件和 `SHA256SUMS`。该版本尚未发布时不要使用不存在的下载地址；可先使用你已经拿到的完整安装包，或等待正式发布。
 
 | 文件 | 用途 |
 | --- | --- |

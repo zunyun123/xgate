@@ -66,20 +66,13 @@ func (n *Native) Describe() string {
 // apply 重新生成配置并重启 Xray，然后落盘。
 // 调用方必须已持有 n.mu。
 func (n *Native) apply(tunnels []*Tunnel) error {
-	// VMess 已移除：库里残留的已启用 VMess 入站不能再生成配置，
-	// 删掉它才能继续，否则它会悄悄继续出 VMess 节点。
-	for _, ib := range n.store.sorted() {
-		if ib.Enable && ib.Protocol == "vmess" {
-			return fmt.Errorf("VMess 协议已移除，请先删除 VMess 入站 %q（端口 %d）再继续", ib.Remark, ib.Port)
-		}
-	}
-	// 后端从 sing-box 切回 Xray 时，库里可能还留着 Hy2/TUIC 入站：
-	// Xray 的 nativeInboundJSON 会把未知协议默认当 VLESS 写，
-	// 那等于悄悄给用户换了一个协议，必须在这里先拦住。
+	// 切核心时旧的 Hy2/TUIC 入站还在库里的话，Xray 配置生成器
+	// 会把它当成普通协议写出去，校验必然失败。提前报错比让
+	// apply 半路失败、还把用户其他入站也拖下水要清楚得多。
 	if n.proc.kind() != "sing-box" {
 		for _, ib := range n.store.sorted() {
-			if ib.Enable && isQUICProtocol(ib.Protocol) {
-				return fmt.Errorf("Hysteria2/TUIC 只支持自建 sing-box 后端，当前是 %s：请先切换回 sing-box，或删除 %s 入站", n.proc.kind(), ib.Protocol)
+			if ib.Enable && isRelayProtocol(ib.Protocol) {
+				return fmt.Errorf("入站 %s 是 %s，只能在 sing-box 模式下运行，请先切回 sing-box 或删除该入站", ib.Remark, ib.Protocol)
 			}
 		}
 	}
@@ -201,16 +194,12 @@ func (n *Native) InboundDetail(id int, publicHost string) (*InboundDetail, error
 	}
 	for _, c := range ib.Clients {
 		id := c.ID
-		// trojan 与 hysteria2 的详情里“ID”一栏实际是口令：
-		// 客户端只靠口令认证，UUID 在 Hy2 里不起作用，照抄 UUID 会误导。
-		// TUIC 仍显示 UUID，口令在分享链接里。
 		if ib.Protocol == "trojan" || ib.Protocol == "hysteria2" {
 			id = c.Password
 		}
 		detail.Clients = append(detail.Clients, ClientInfo{Email: c.Email, ID: id, Enable: c.Enable, BoundTo: c.BoundTo})
-		// VMess 已移除：详情里不再给 VMess 链接，免得旧入站还能被分发。
-		if ib.Protocol != "vmess" {
-			detail.Links = append(detail.Links, shareLink(ib, c, publicHost))
+		if link := shareLink(ib, c, publicHost); link != "" {
+			detail.Links = append(detail.Links, link)
 		}
 	}
 	return detail, nil
@@ -228,7 +217,7 @@ func (n *Native) InboundLinks(ids []int, publicHost string) ([]string, error) {
 		}
 		seen[id] = true
 		ib := n.store.byID(id)
-		if ib == nil || !ib.Enable || ib.Protocol == "vmess" {
+		if ib == nil || !ib.Enable {
 			continue
 		}
 		for _, c := range ib.Clients {
@@ -370,26 +359,6 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 		remark := uniqueRemark(exitLabel(t), takenRemarks)
 		takenRemarks[remark] = true
 
-		// Salamander 口令可以照抄（口令不占端口），跳跃段不能照抄：
-		// 每个出口克隆的跳跃端口必须是互不冲突的，否则 sing-box
-		// 会在同一个 UDP 端口上起两个入站直接失败。这里按模板
-		// 跳跃段的端口个数，给每个克隆单独分配一段连续空闲端口；
-		// 模板没填跳跃段时克隆也不带跳跃。
-		hopPorts := ""
-		tplHop, err := parseHopPorts(tpl.HopPorts)
-		if err != nil {
-			return created, err
-		}
-		if len(tplHop) > 0 {
-			allocated, err := allocateHopRange(used, len(tplHop))
-			if err != nil {
-				return created, err
-			}
-			hopPorts = hopPortsString(allocated)
-			for _, p := range allocated {
-				used[p] = true
-			}
-		}
 		clone := &nativeInbound{
 			ID:       n.store.NextID,
 			Port:     port,
@@ -408,8 +377,6 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 			BoundTo:       sanitizeTag(t.Node.HostName),
 			AutoExitOrder: t.Order,
 			AutoTemplate:  templateID,
-			ObfsPassword:  tpl.ObfsPassword,
-			HopPorts:      hopPorts,
 		}
 		for index := range clone.Clients {
 			clone.Clients[index].BoundTo = ""
@@ -599,17 +566,13 @@ type NewInboundSpec struct {
 	ServerNames string // 逗号分隔，留空则从 Dest 推出来
 	ShortID     string
 	Fingerprint string
-
-	// Hysteria2 专属：Salamander 混淆口令与跳跃端口段（见 normalizeInboundSpec）。
-	ObfsPassword string
-	HopPorts     string
 }
 
 // nativeProtocols 是自建模式支持的协议，与前端下拉保持一致。
-// VMess 已移除：新建会直接报不支持，库里残留的已启用 VMess 入站
-// 会在 apply 里拦住，删掉它才能继续生成配置，不会悄悄继续出 VMess 节点。
-// hysteria2/tuic 只在 sing-box 后端真正生成入站（见 CreateInbound 的拦挡），
-// Xray 后端收到它们会在 apply 里直接报错，不会静默写成 VLESS。
+// VMess 已移除：不在此列，建 VMess 会直接报不支持；升级后残留的
+// VMess 入站也不会再生成运行配置（见 buildXrayConfig/buildSingBoxConfig 的跳过逻辑）。
+// hysteria2/tuic 只有 sing-box 核心能跑，CreateInbound 里会再按核心把关，
+// Xray 核心、3x-ui、S-UI 下建它们都会直接报错而不是生成坏配置。
 var nativeProtocols = map[string]bool{"vless": true, "trojan": true, "hysteria2": true, "tuic": true}
 
 // CreateInbound 新建一个入站，端口留空时随机分配。
@@ -621,26 +584,23 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*Created
 	if err != nil {
 		return nil, err
 	}
-	// Xray 没有 Hysteria2/TUIC 服务端入站，normalize 只校验组合，
-	// 到这里必须按后端再拦一次，否则 Xray 配置会把它们写坏。
-	// apply 里还有一道同样的拦挡（防后端切换后旧入站残留）。
-	if isQUICProtocol(ns.Protocol) && n.proc.kind() != "sing-box" {
-		return nil, fmt.Errorf("Hysteria2/TUIC 只支持自建 sing-box 后端，当前是 %s：请先切换到 sing-box 再创建", n.proc.kind())
-	}
 	proto, network, security, port := ns.Protocol, ns.Network, ns.Security, ns.Port
+	// Hysteria2/TUIC 不是 Xray 入站协议，Xray 核心下建站只会生成
+	// Xray 读不懂的配置，所以在这里就拦住，让用户切到 sing-box 模式。
+	if isRelayProtocol(proto) && n.proc.kind() != "sing-box" {
+		return nil, fmt.Errorf("%s 只能在自建 sing-box 模式下创建，当前核心是 %s", proto, n.proc.kind())
+	}
 
 	ib := &nativeInbound{
-		ID:           n.store.NextID,
-		Port:         port,
-		Protocol:     proto,
-		Network:      network,
-		Path:         ns.Path,
-		Host:         ns.Host,
-		Security:     security,
-		Remark:       ns.Remark,
-		Enable:       true,
-		ObfsPassword: ns.ObfsPassword,
-		HopPorts:     ns.HopPorts,
+		ID:       n.store.NextID,
+		Port:     port,
+		Protocol: proto,
+		Network:  network,
+		Path:     ns.Path,
+		Host:     ns.Host,
+		Security: security,
+		Remark:   ns.Remark,
+		Enable:   true,
 	}
 
 	switch security {
@@ -664,16 +624,10 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*Created
 		ib.Reality = conf
 	}
 
-	// QUIC 协议的口令就是唯一的认证凭据（Hy2 只认口令，TUIC 认 UUID+口令），
-	// 比 trojan 的 16 位十六进制再长一倍，避免弱口令被 QUIC 扫描直接猜中。
-	password := randomHex(8)
-	if isQUICProtocol(proto) {
-		password = randomHex(16)
-	}
 	ib.Clients = []nativeClient{{
 		Email:    fmt.Sprintf("%s-%d", proto, port),
 		ID:       newUUID(),
-		Password: password,
+		Password: randomHex(8),
 		Flow:     ns.Flow,
 		Enable:   true,
 	}}
@@ -763,65 +717,43 @@ func shareLink(ib *nativeInbound, c nativeClient, host string) string {
 		addressHost = "[" + strings.Trim(host, "[]") + "]"
 	}
 
-	// QUIC 协议不走上面那套 type/security/flow 参数：
-	// Hy2 只有口令认证，TUIC 是 UUID+口令，两者都强制 TLS + h3 ALPN。
-	// 自签证书时带 insecure/allow_insecure=1（同时给 Hy2 带上证书指纹，
-	// 支持 pin 的客户端可以改用指纹校验而不必全量跳过校验）；
-	// 用真实域名证书时不带跳过校验，让客户端正常验签。
-	if isQUICProtocol(ib.Protocol) {
-		sni := ""
-		selfSigned := false
-		pin := ""
-		if ib.TLS != nil {
-			sni = ib.TLS.ServerName
-			selfSigned = ib.TLS.SelfSigned
-			pin = ib.TLS.CertSha256
+	// VMess 已移除，残留的 VMess 入站不再输出分享链接。
+	if ib.Protocol == "vmess" {
+		return ""
+	}
+
+	// Hysteria2/TUIC 不走上面那套 vless/trojan 查询参数：
+	// 它们是 UDP/QUIC 入站，凭据和 TLS 参数的写法各家客户端都按
+	// 下面这两种固定格式认。自签证书时用 insecure/allow_insecure=1，
+	// 否则客户端会因为验不过自签证书而直接拒绝连接；有正式证书时
+	// 只带 sni，让客户端正常验签。
+	if ib.Protocol == "hysteria2" {
+		hq := url.Values{}
+		if ib.TLS != nil && ib.TLS.ServerName != "" {
+			hq.Set("sni", ib.TLS.ServerName)
 		}
-		switch ib.Protocol {
-		case "hysteria2":
-			hq := url.Values{}
-			if sni != "" {
-				hq.Set("sni", sni)
-			}
-			hq.Set("alpn", "h3")
-			if ib.ObfsPassword != "" {
-				hq.Set("obfs", "salamander")
-				hq.Set("obfs-password", ib.ObfsPassword)
-			}
-			if selfSigned {
-				hq.Set("insecure", "1")
-				if pin != "" {
-					hq.Set("pinSHA256", pin)
-				}
-			}
-			// 跳跃端口写进端口段：主端口,跳跃段，如 30001,30010-30020。
-			// 这是官方 Hy2 链接的多端口格式，客户端按这个段跳跃；
-			// 服务端对应地在每个跳跃端口上都有一个同配置入站在听。
-			portField := fmt.Sprint(ib.Port)
-			if strings.TrimSpace(ib.HopPorts) != "" {
-				portField += "," + strings.TrimSpace(ib.HopPorts)
-			}
-			return fmt.Sprintf("hysteria2://%s@%s:%s?%s#%s", url.User(c.Password).String(), addressHost, portField, hq.Encode(), frag)
-		case "tuic":
-			tq := url.Values{}
-			if sni != "" {
-				tq.Set("sni", sni)
-			}
-			tq.Set("alpn", "h3")
-			tq.Set("congestion_control", "bbr")
-			tq.Set("udp_relay_mode", "native")
-			if selfSigned {
-				tq.Set("allow_insecure", "1")
-			}
-			return fmt.Sprintf("tuic://%s@%s:%d?%s#%s", url.UserPassword(c.ID, c.Password).String(), addressHost, ib.Port, tq.Encode(), frag)
+		if ib.TLS != nil && ib.TLS.SelfSigned {
+			hq.Set("insecure", "1")
 		}
+		return fmt.Sprintf("hysteria2://%s@%s:%d?%s#%s", url.User(c.Password).String(), addressHost, ib.Port, hq.Encode(), frag)
+	}
+	if ib.Protocol == "tuic" {
+		tq := url.Values{}
+		tq.Set("congestion_control", "bbr")
+		tq.Set("udp_relay_mode", "native")
+		tq.Set("alpn", "h3")
+		if ib.TLS != nil && ib.TLS.ServerName != "" {
+			tq.Set("sni", ib.TLS.ServerName)
+		}
+		if ib.TLS != nil && ib.TLS.SelfSigned {
+			tq.Set("allow_insecure", "1")
+		}
+		return fmt.Sprintf("tuic://%s:%s@%s:%d?%s#%s", c.ID, url.QueryEscape(c.Password), addressHost, ib.Port, tq.Encode(), frag)
 	}
 
 	switch ib.Protocol {
 	case "trojan":
 		return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", url.User(c.Password).String(), addressHost, ib.Port, q.Encode(), frag)
-	case "vmess":
-		return (subscriptionNode{Protocol: "vmess", Name: label, Server: host, Port: ib.Port, UUID: c.ID, Cipher: "auto", Network: net, Path: ib.Path, Host: ib.Host, Security: sec, ServerName: q.Get("sni"), Fingerprint: q.Get("fp"), PublicKey: q.Get("pbk"), ShortID: q.Get("sid"), Pin: q.Get("pinSHA256")}).vmessLink()
 	default:
 		q.Set("encryption", "none")
 		return fmt.Sprintf("vless://%s@%s:%d?%s#%s", c.ID, addressHost, ib.Port, q.Encode(), frag)

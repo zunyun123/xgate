@@ -4,7 +4,7 @@ set -euo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   printf '%s\n' 'Miku Gate VPS installer (Linux amd64/arm64, root).' \
     'Usage: bash install-online.sh [--panel | --quick | --docker] [--domain HOST | --no-domain] [--background] [--download-only DIRECTORY]' \
-    'Environment: MIKU_VERSION=v0.2.6 (default: latest stable), GITHUB_TOKEN (private repository), WEB_PORT (default: 8899), MIKU_DOCKER_INSTALL_DIR (default: /opt/miku-gate-docker).'
+    'Environment: MIKU_VERSION=v0.2.6 (default: latest stable), MIKU_GATE_REPO=zunyun123/xgate (self-use repo, required), GITHUB_TOKEN (private repository), WEB_PORT (default: 8899), MIKU_DOCKER_INSTALL_DIR (default: /opt/miku-gate-docker).'
   exit 0
 fi
 [[ "$(uname -s)" == Linux ]] || { echo '仅支持 Linux VPS。' >&2; exit 1; }
@@ -35,7 +35,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-API = 'https://api.github.com/repos/vioIetMiku/miku-gate'
+# 自用版指向：不再硬编码上游 vioIetMiku/miku-gate。
+# 发布前把 YOUR_GITHUB_USER 换成你自己的 GitHub 用户名，
+# 或运行时设置 MIKU_GATE_REPO=zunyun123/xgate；占位没换就报错停下。
+REPO = os.environ.get('MIKU_GATE_REPO', 'zunyun123/xgate')
+if REPO.startswith('zunyun123/'):
+    raise RuntimeError('请先把 MIKU_GATE_REPO 设为你自己的仓库（zunyun123/xgate），或把 install-online.sh 里的 YOUR_GITHUB_USER 换掉')
+API = 'https://api.github.com/repos/' + REPO
 MAX_ARCHIVE = 160 << 20
 MAX_UNPACKED = 320 << 20
 

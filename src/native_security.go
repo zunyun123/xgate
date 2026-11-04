@@ -111,7 +111,7 @@ func certFingerprint(certFile string) (string, error) {
 // 支持的取值。集中在这里，前后端校验共用一份。
 var (
 	// udp 只对 Hysteria2/TUIC 有意义（见 inbound_spec.go 的串联校验），
-	// VLESS/VMess/Trojan 仍走 tcp/ws/grpc/httpupgrade/xhttp。
+	// VLESS/Trojan 仍走 tcp/ws/grpc/httpupgrade/xhttp。
 	nativeNetworks   = map[string]bool{"tcp": true, "ws": true, "grpc": true, "httpupgrade": true, "xhttp": true, "udp": true}
 	nativeSecurities = map[string]bool{"none": true, "tls": true, "reality": true}
 )

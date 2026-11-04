@@ -71,6 +71,12 @@ func buildXrayConfig(inbounds []*nativeInbound, tunnels []*Tunnel) map[string]an
 		if !ib.Enable {
 			continue
 		}
+		// VMess 已移除：升级后 native.json 里残留的 VMess 入站
+		// 不再生成运行配置，也不在路由里留规则，等于停用，
+		// 需要用户在面板里删掉它，而不是悄悄继续跑。
+		if ib.Protocol == "vmess" {
+			continue
+		}
 		ins = append(ins, nativeInboundJSON(ib))
 	}
 
@@ -99,7 +105,7 @@ func buildXrayConfig(inbounds []*nativeInbound, tunnels []*Tunnel) map[string]an
 
 	rules := []any{}
 	for _, ib := range inbounds {
-		if !ib.Enable {
+		if !ib.Enable || ib.Protocol == "vmess" {
 			continue
 		}
 		for _, client := range ib.Clients {
@@ -148,8 +154,6 @@ func nativeInboundJSON(ib *nativeInbound) map[string]any {
 		switch ib.Protocol {
 		case "trojan":
 			clients = append(clients, map[string]any{"password": c.Password, "email": c.Email})
-		case "vmess":
-			clients = append(clients, map[string]any{"id": c.ID, "email": c.Email})
 		default: // vless
 			clients = append(clients, map[string]any{"id": c.ID, "email": c.Email, "flow": c.Flow})
 		}

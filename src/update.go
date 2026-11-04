@@ -19,7 +19,16 @@ import (
 	"time"
 )
 
-const updateRepo = "byJoey/fanout"
+// updateRepoValue 是自用版的更新检查仓库，不再硬编码上游。
+// 运行时可用 MIKU_GATE_REPO=你的用户名/miku-gate 覆盖；
+// 没设置时返回占位，更新检查会失败而不是悄悄拉上游版本，
+// 发布前把占位换成你自己的仓库名即可。
+func updateRepoValue() string {
+	if v := strings.TrimSpace(os.Getenv("MIKU_GATE_REPO")); v != "" {
+		return v
+	}
+	return "zunyun123/xgate"
+}
 
 // releaseInfo 是 GitHub Releases API 里我们关心的字段。
 type releaseInfo struct {
@@ -56,7 +65,7 @@ func assetArch() string {
 
 // fetchLatestRelease 拉取最新 release 元数据。
 func fetchLatestRelease() (*releaseInfo, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", updateRepo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", updateRepoValue())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

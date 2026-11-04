@@ -16,17 +16,16 @@ type normalizedSpec struct {
 	Host     string
 	Remark   string
 	Flow     string
-	// 只有 Hysteria2 能用：Salamander 混淆口令与跳跃端口段。
-	ObfsPassword string
-	HopPorts     string
 }
 
-// isQUICProtocol 判断协议是不是走 QUIC/UDP 的那一类。
+// isRelayProtocol 判断是不是串联输出协议：Hysteria2 / TUIC。
 //
-// Hysteria2 与 TUIC 都不是 TCP 流式协议：它们在 UDP 上跑 QUIC，
-// 强制要求 TLS，且没有 ws/grpc/xhttp 那种“路径/Host 头”传输层。
-// 这个判断是 sing-box 入站、分享链接、订阅转换共用的分水岭。
-func isQUICProtocol(proto string) bool {
+// 这两个协议只有 sing-box 能做服务端入站（Xray 入站没有它们），
+// 而且它们自带 UDP/QUIC 传输、强制 TLS，不能套 ws/grpc/REALITY/Vision。
+// 它们的流量不直接出公网，而是经 sing-box 转给下游 SOCKS5 出口
+// （默认是 AimiliVPN 式本地 8500，见 relayUpstream），
+// 绑了具体出口时则走该出口的隧道 SOCKS。
+func isRelayProtocol(proto string) bool {
 	return proto == "hysteria2" || proto == "tuic"
 }
 
@@ -35,10 +34,8 @@ func isQUICProtocol(proto string) bool {
 // used 是已被占用的端口集合；端口留空时从中避开随机挑一个。
 // 这段逻辑对两种后端完全一致，所以从 Native.CreateInbound 里抽出来共用，
 // 免得 3x-ui 那边再写一份走样的校验。
-//
-// 注意：Hysteria2/TUIC 在这里只做“组合是否合法”的校验，
-// “哪个后端能跑”由各后端 CreateInbound 自己再拦：
-// 自建 Xray、3x-ui、S-UI 都没有 Hy2/TUIC 服务端，只有自建 sing-box 能跑。
+// 注意：Hysteria2/TUIC 在这里只做组合校验，真正能不能建由各后端
+// CreateInbound 再按核心类型把关（自建 sing-box 才能建，见 native.go）。
 func normalizeInboundSpec(spec NewInboundSpec, used map[int]bool) (*normalizedSpec, error) {
 	proto := strings.ToLower(strings.TrimSpace(spec.Protocol))
 	if proto == "" {
@@ -47,104 +44,48 @@ func normalizeInboundSpec(spec NewInboundSpec, used map[int]bool) (*normalizedSp
 	if !nativeProtocols[proto] {
 		return nil, fmt.Errorf("不支持的协议 %q", spec.Protocol)
 	}
-	if isQUICProtocol(proto) {
-		// QUIC 协议的组合是固定的，不接受 TCP/ws/grpc/REALITY/none 的混搭：
-		// 留空时补成 UDP+TLS，填了别的就直接报错，别静默改成用户没要的组合。
-		network := strings.ToLower(strings.TrimSpace(spec.Network))
-		if network == "" {
-			network = "udp"
-		}
-		if network != "udp" {
-			return nil, fmt.Errorf("Hysteria2/TUIC 只支持 UDP 传输，不支持 %q", spec.Network)
-		}
-		security := strings.ToLower(strings.TrimSpace(spec.Security))
-		if security == "" {
-			security = "tls"
-		}
-		if security != "tls" {
-			return nil, fmt.Errorf("Hysteria2/TUIC 必须使用 TLS，不支持 %q", spec.Security)
-		}
-		if spec.Vision {
-			return nil, fmt.Errorf("xtls-rprx-vision 只能用于 VLESS + TCP + TLS/REALITY")
-		}
-		// Salamander 与端口跳跃都是 Hysteria2 专属：TUIC 的 sing-box
-		// 入站没有 obfs 字段、客户端也不认 server_ports，填了只能报错，
-		// 不能静默丢掉让用户以为已经生效。
-		obfsPassword := strings.TrimSpace(spec.ObfsPassword)
-		hopPorts := strings.TrimSpace(spec.HopPorts)
-		if proto != "hysteria2" && (obfsPassword != "" || hopPorts != "") {
-			return nil, fmt.Errorf("Salamander 混淆与端口跳跃只支持 Hysteria2，%s 不能用", proto)
-		}
-		hop, err := parseHopPorts(hopPorts)
-		if err != nil {
-			return nil, err
-		}
-		port := spec.Port
-		if port == 0 {
-			p, err := freeRandomPort(used)
-			if err != nil {
-				return nil, err
-			}
-			port = p
-		} else if used[port] {
-			return nil, fmt.Errorf("端口 %d 已被别的入站占用", port)
-		} else if !udpPortAvailable(port) {
-			// 手填端口不走上面的随机分配，used 里也没有系统 UDP 服务，
-			// 这里直接查一次，免得 sing-box 启动时才报端口被占。
-			return nil, fmt.Errorf("端口 %d 的 UDP 已被占用，Hysteria2/TUIC 无法监听", port)
-		}
-		for _, p := range hop {
-			if p == port {
-				return nil, fmt.Errorf("跳跃端口段不能包含主端口 %d", port)
-			}
-			if used[p] {
-				return nil, fmt.Errorf("跳跃端口 %d 已被别的入站占用", p)
-			}
-			if !udpPortAvailable(p) {
-				return nil, fmt.Errorf("跳跃端口 %d 的 UDP 已被占用", p)
-			}
-		}
-		remark := strings.TrimSpace(spec.Remark)
-		if remark == "" {
-			remark = fmt.Sprintf("%s-%d", proto, port)
-		}
-		// QUIC 没有 ws 路径/Host 头：传进来的 Path/Host 直接丢掉，
-		// 免得它们被误写进 sing-box 配置或分享链接。
-		return &normalizedSpec{
-			Protocol:     proto,
-			Network:      network,
-			Security:     security,
-			Port:         port,
-			Path:         "",
-			Host:         "",
-			Remark:       remark,
-			Flow:         "",
-			ObfsPassword: obfsPassword,
-			HopPorts:     hopPorts,
-		}, nil
-	}
-	if strings.TrimSpace(spec.ObfsPassword) != "" || strings.TrimSpace(spec.HopPorts) != "" {
-		return nil, fmt.Errorf("Salamander 混淆与端口跳跃只支持 Hysteria2，%s 不能用", proto)
-	}
 	network := strings.ToLower(strings.TrimSpace(spec.Network))
 	if network == "" {
-		network = "tcp"
+		if isRelayProtocol(proto) {
+			network = "udp"
+		} else {
+			network = "tcp"
+		}
 	}
 	if !nativeNetworks[network] {
 		return nil, fmt.Errorf("不支持的传输方式 %q", spec.Network)
 	}
 	security := strings.ToLower(strings.TrimSpace(spec.Security))
 	if security == "" {
-		security = "none"
+		if isRelayProtocol(proto) {
+			security = "tls"
+		} else {
+			security = "none"
+		}
 	}
 	if !nativeSecurities[security] {
 		return nil, fmt.Errorf("不支持的安全层 %q", spec.Security)
+	}
+	// Hysteria2/TUIC：UDP 之上的 QUIC 传输，TLS 是协议本身的一部分，
+	// 不能换成 none/REALITY，也不能再套 ws/grpc/xhttp，更不能用 Vision。
+	if isRelayProtocol(proto) {
+		if network != "udp" {
+			return nil, fmt.Errorf("%s 只支持 UDP 传输，不支持 %s", proto, network)
+		}
+		if security != "tls" {
+			return nil, fmt.Errorf("%s 必须用 TLS，不支持 %s", proto, security)
+		}
+		if spec.Vision {
+			return nil, fmt.Errorf("xtls-rprx-vision 只能用于 VLESS + TCP + TLS/REALITY")
+		}
 	}
 	// REALITY 靠模仿 TLS 握手工作，套在 ws/grpc 这类已有自己头部的传输上没有意义，
 	// Xray 也不接受这种组合
 	if security == "reality" && network != "tcp" && network != "xhttp" && network != "grpc" {
 		return nil, fmt.Errorf("REALITY 不支持 %s 传输", network)
 	}
+	// VMess 已移除，这里不再有 vmess+ws+tls 组合需要放行。
+
 	port := spec.Port
 	if port == 0 {
 		p, err := freeRandomPort(used)

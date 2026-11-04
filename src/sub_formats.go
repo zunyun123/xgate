@@ -15,17 +15,9 @@ type subscriptionNode struct {
 	Name, Protocol, Server, UUID, Username, Password           string
 	Security, ServerName, Fingerprint, PublicKey, ShortID, Pin string
 	Network, Path, Host, Flow, Cipher, Encryption              string
-	// QUIC 协议专用：Hy2 的混淆、TUIC 的拥塞控制。
-	// 没有它们时订阅转换会用 Hy2 无混淆 / TUIC bbr 的默认值。
-	CongestionControl, Obfs, ObfsPassword string
-	// HopPorts 是 Hy2 链接端口段里的跳跃段，如 "30010-30020"，
-	// 来自 hysteria2://口令@host:主端口,跳跃段 这种多端口格式。
-	// TUIC 不支持跳跃，解析时填了会被忽略而不是报错（外部链接
-	// 的容错），服务端生成时 TUIC 填跳跃段是直接报错的。
-	HopPorts      string
-	Port, AlterID int
-	ALPN          []string
-	Insecure      bool
+	Port, AlterID                                              int
+	ALPN                                                       []string
+	Insecure                                                   bool
 }
 
 func decodeSubscriptionBase64(raw string) ([]byte, error) {
@@ -43,91 +35,25 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 	if len(raw) > 32<<10 || strings.ContainsAny(raw, "\r\n\x00") {
 		return n, fmt.Errorf("节点链接格式无效")
 	}
-	if strings.HasPrefix(raw, "vmess://") && !strings.Contains(strings.SplitN(strings.TrimPrefix(raw, "vmess://"), "?", 2)[0], "@") {
-		data, err := decodeSubscriptionBase64(strings.TrimPrefix(raw, "vmess://"))
-		if err != nil {
-			return n, err
-		}
-		var fields map[string]any
-		if json.Unmarshal(data, &fields) != nil {
-			return n, fmt.Errorf("VMess配置格式无效")
-		}
-		value := func(key string) string {
-			if v, ok := fields[key]; ok {
-				return fmt.Sprint(v)
-			}
-			return ""
-		}
-		n.Protocol, n.Name, n.Server, n.UUID = "vmess", value("ps"), value("add"), value("id")
-		n.Port, _ = strconv.Atoi(value("port"))
-		n.AlterID, _ = strconv.Atoi(value("aid"))
-		n.Network, n.Path, n.Host = value("net"), value("path"), value("host")
-		n.Security, n.ServerName, n.Fingerprint = value("tls"), value("sni"), value("fp")
-		if value("scy") != "" {
-			n.Cipher = value("scy")
-		}
-		n.Pin, n.PublicKey, n.ShortID = value("pinSHA256"), value("pbk"), value("sid")
-		if value("alpn") != "" {
-			n.ALPN = strings.Split(value("alpn"), ",")
-		}
-	} else {
-		// Hy2 多端口链接在 Go 的 url.Parse 里本身就是非法的
-		// （端口段带逗号），解析前先把跳跃段拆出来：主端口留下
-		// 给 url.Parse，跳跃段记在 hopPortsFromLink 里，解析完再贴回去。
-		hopPortsFromLink := ""
-		rawForParse := raw
-		if strings.HasPrefix(raw, "hysteria2://") || strings.HasPrefix(raw, "hy2://") {
-			if idx := strings.Index(raw, "://"); idx >= 0 {
-				rest := raw[idx+3:]
-				end := len(rest)
-				for i, c := range rest {
-					if c == '?' || c == '#' || c == '/' {
-						end = i
-						break
-					}
-				}
-				authority, remainder := rest[:end], rest[end:]
-				hostport := authority
-				userinfo := ""
-				if at := strings.LastIndex(authority, "@"); at >= 0 {
-					userinfo, hostport = authority[:at+1], authority[at+1:]
-				}
-				if strings.Contains(hostport, ",") {
-					parts := strings.SplitN(hostport, ",", 2)
-					hopPortsFromLink = parts[1]
-					rawForParse = raw[:idx+3] + userinfo + parts[0] + remainder
-				}
-			}
-		}
-		u, err := url.Parse(rawForParse)
+	// VMess 已移除：vmess:// 链接不再解析，直接报错，
+	// 避免订阅里混进已不支持的协议。
+	if strings.HasPrefix(raw, "vmess://") {
+		return n, fmt.Errorf("VMess 已移除，不再支持")
+	}
+	{
+		u, err := url.Parse(raw)
 		if err != nil {
 			return n, fmt.Errorf("节点链接无法解析")
-		}
-		if hopPortsFromLink != "" {
-			n.HopPorts = hopPortsFromLink
 		}
 		n.Protocol = strings.ToLower(u.Scheme)
 		if n.Protocol == "socks" || n.Protocol == "sock5" {
 			n.Protocol = "socks5"
 		}
-		if n.Protocol == "hy2" {
-			n.Protocol = "hysteria2"
-		}
 		n.Name, n.Server = u.Fragment, u.Hostname()
 		if (n.Protocol == "http" || n.Protocol == "https" || n.Protocol == "socks5" || n.Protocol == "sock5" || n.Protocol == "socks") && u.Path != "" && u.Path != "/" {
 			return n, fmt.Errorf("请填写代理分享链接；CSV来源请在来源入口添加")
 		}
-		// Hy2 链接的端口段可以是多端口格式：主端口,跳跃段。
-		// u.Port() 会原样返回 "30001,30010-30020"，Atoi 失败就
-		// 会把端口丢成 0，所以这里先拆开：第一段是主端口，
-		// 剩下的是跳跃段，交给后面的客户端转换用。
-		if n.Protocol == "hysteria2" && strings.Contains(u.Port(), ",") {
-			parts := strings.SplitN(u.Port(), ",", 2)
-			n.Port, _ = strconv.Atoi(parts[0])
-			n.HopPorts = parts[1]
-		} else {
-			n.Port, _ = strconv.Atoi(u.Port())
-		}
+		n.Port, _ = strconv.Atoi(u.Port())
 		if n.Port == 0 && n.Protocol == "http" {
 			n.Port = 80
 		}
@@ -154,51 +80,28 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		if alpn := q.Get("alpn"); alpn != "" {
 			n.ALPN = strings.Split(alpn, ",")
 		}
-		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("allow_insecure") == "1" || q.Get("allow_insecure") == "true" || q.Get("insecure") == "1"
-		n.CongestionControl = q.Get("congestion_control")
-		if n.CongestionControl == "" {
-			n.CongestionControl = q.Get("congestion-controller")
-		}
-		n.Obfs, n.ObfsPassword = q.Get("obfs"), q.Get("obfs-password")
-		if n.ObfsPassword == "" && strings.Contains(n.Obfs, ":") {
-			// 有些客户端把混淆写成 obfs=salamander:口令，这里拆开，
-			// 免得转换到 sing-box/Clash 时把口令当成混淆类型。
-			parts := strings.SplitN(n.Obfs, ":", 2)
-			n.Obfs, n.ObfsPassword = parts[0], parts[1]
-		}
+		n.Insecure = q.Get("allowInsecure") == "1" || q.Get("allowInsecure") == "true" || q.Get("insecure") == "1" || q.Get("allow_insecure") == "1"
 		if u.User != nil {
 			n.Username = u.User.Username()
 			n.Password, _ = u.User.Password()
 		}
 		switch n.Protocol {
-		case "hysteria2":
-			// Hy2 链接通常只有口令：hysteria2://口令@host:port。
-			// userpass 形式 hysteria2://名:口令@… 时 Username 是名、Password 是口令。
-			if n.Password == "" {
-				n.Password = n.Username
-			}
-			n.Username = ""
-			n.Network = "udp"
-			if n.Security == "" {
-				n.Security = "tls"
-			}
-		case "tuic":
-			// TUIC 链接是 tuic://uuid:口令@host:port。
-			n.UUID = n.Username
-			n.Username = ""
-			n.Network = "udp"
-			if n.Security == "" {
-				n.Security = "tls"
-			}
-		}
-		switch n.Protocol {
-		case "vless", "vmess":
+		case "vless":
 			n.UUID = n.Username
 		case "trojan":
 			n.Password = n.Username
 			if n.Security == "" {
 				n.Security = "tls"
 			}
+		case "hysteria2":
+			// hysteria2://<密码>@host:port，userinfo 只有密码没有用户名。
+			n.Password = n.Username
+			n.Security = "tls"
+		case "tuic":
+			// tuic://<uuid>:<密码>@host:port，uuid 已在 Username 里，
+			// 密码在 User.Password() 里，上面已填好。
+			n.UUID = n.Username
+			n.Security = "tls"
 		case "https":
 			n.Protocol = "http"
 			n.Security = "tls"
@@ -234,33 +137,21 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 		return n, fmt.Errorf("节点地址或端口无效")
 	}
 	switch n.Protocol {
-	case "vless", "vmess":
+	case "vless":
 		if n.UUID == "" {
 			return n, fmt.Errorf("缺少节点UUID")
 		}
-	case "trojan", "ss":
+	case "trojan", "ss", "hysteria2":
 		if n.Password == "" {
 			return n, fmt.Errorf("缺少节点密码")
-		}
-	case "hysteria2":
-		if n.Password == "" {
-			return n, fmt.Errorf("缺少节点密码")
-		}
-		if n.HopPorts != "" {
-			if _, err := parseHopPorts(n.HopPorts); err != nil {
-				return n, err
-			}
 		}
 	case "tuic":
-		if n.UUID == "" {
-			return n, fmt.Errorf("缺少节点UUID")
-		}
-		if n.Password == "" {
-			return n, fmt.Errorf("缺少节点密码")
+		if n.UUID == "" || n.Password == "" {
+			return n, fmt.Errorf("缺少节点UUID或密码")
 		}
 	case "socks5", "http":
 	default:
-		return n, fmt.Errorf("支持VLESS、VMess、Trojan、SS、SOCKS5、HTTP、Hysteria2和TUIC链接")
+		return n, fmt.Errorf("支持VLESS、Trojan、Hysteria2、TUIC、SS、SOCKS5和HTTP链接")
 	}
 	if n.Security != "none" && n.Security != "tls" && n.Security != "reality" {
 		return n, fmt.Errorf("不支持的安全层")
@@ -271,22 +162,6 @@ func parseSubscriptionNode(raw string) (subscriptionNode, error) {
 	return n, nil
 }
 
-func (n subscriptionNode) vmessLink() string {
-	v := map[string]any{"v": "2", "ps": n.Name, "add": n.Server, "port": strconv.Itoa(n.Port), "id": n.UUID, "aid": strconv.Itoa(n.AlterID), "scy": n.Cipher, "net": n.Network, "type": "none", "host": n.Host, "path": n.Path, "tls": "", "sni": n.ServerName, "fp": n.Fingerprint, "alpn": strings.Join(n.ALPN, ",")}
-	if n.Pin != "" {
-		v["pinSHA256"] = n.Pin
-	}
-	if n.PublicKey != "" {
-		v["pbk"] = n.PublicKey
-		v["sid"] = n.ShortID
-	}
-	if n.Security != "none" {
-		v["tls"] = n.Security
-	}
-	raw, _ := json.Marshal(v)
-	return "vmess://" + base64.StdEncoding.EncodeToString(raw)
-}
-
 func uniqueSubLinks(links []string) []string {
 	seen, out := map[string]bool{}, []string{}
 	for _, link := range links {
@@ -295,7 +170,7 @@ func uniqueSubLinks(links []string) []string {
 		if node, err := parseSubscriptionNode(link); err == nil {
 			node.Name = ""
 			node.Server = strings.ToLower(node.Server)
-			if node.Protocol == "vless" || node.Protocol == "vmess" {
+			if node.Protocol == "vless" {
 				node.UUID = strings.ToLower(node.UUID)
 				node.Username = ""
 			}
@@ -320,11 +195,6 @@ func formatSubscription(links []string, target string) (string, string, error) {
 		return encodeSub(links, target), "text/plain; charset=utf-8", nil
 	}
 	if target == "v2ray" {
-		for i, link := range links {
-			if n, err := parseSubscriptionNode(link); err == nil && n.Protocol == "vmess" {
-				links[i] = n.vmessLink()
-			}
-		}
 		return encodeSub(uniqueSubLinks(links), "base64"), "text/plain; charset=utf-8", nil
 	}
 	nodes := []subscriptionNode{}
@@ -375,26 +245,30 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 	}
 	v := map[string]any{"name": n.Name, "type": typeName, "server": n.Server, "port": n.Port}
 	switch n.Protocol {
-	case "vless", "vmess":
+	case "vless":
 		v["uuid"] = n.UUID
 		v["udp"] = true
 		v["network"] = n.Network
-		if n.Protocol == "vmess" {
-			v["alterId"] = n.AlterID
-			v["cipher"] = n.Cipher
-		} else {
-			if n.Flow != "" {
-				v["flow"] = n.Flow
-			}
-			v["packet-encoding"] = "xudp"
-			if n.Encryption != "" && n.Encryption != "none" {
-				return nil, fmt.Errorf("%s: 此VLESS加密方式请使用通用订阅", n.Name)
-			}
+		if n.Flow != "" {
+			v["flow"] = n.Flow
+		}
+		v["packet-encoding"] = "xudp"
+		if n.Encryption != "" && n.Encryption != "none" {
+			return nil, fmt.Errorf("%s: 此VLESS加密方式请使用通用订阅", n.Name)
 		}
 	case "trojan":
 		v["password"] = n.Password
 		v["udp"] = true
 		v["network"] = n.Network
+	case "hysteria2":
+		v["password"] = n.Password
+		v["udp"] = true
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["udp"] = true
+		v["udp-relay-mode"] = "native"
+		v["congestion-controller"] = "bbr"
 	case "ss":
 		v["password"] = n.Password
 		v["cipher"] = n.Cipher
@@ -404,52 +278,10 @@ func (n subscriptionNode) clashProxy() (map[string]any, error) {
 			v["username"] = n.Username
 			v["password"] = n.Password
 		}
-	case "hysteria2":
-		// Clash/Mihomo 的 hysteria2 不走下面那套 vless 传输/安全层：
-		// 它没有 network/ws 字段，SNI 字段就叫 sni，不是 servername。
-		v["password"] = n.Password
-		v["udp"] = true
-		if n.Obfs != "" {
-			v["obfs"] = n.Obfs
-			v["obfs-password"] = n.ObfsPassword
-		}
-		if n.HopPorts != "" {
-			// Mihomo 用 ports 字段接跳跃段，port 仍是主端口。
-			v["ports"] = n.HopPorts
-		}
-	case "tuic":
-		v["uuid"] = n.UUID
-		v["password"] = n.Password
-		v["udp"] = true
-		if n.CongestionControl != "" {
-			v["congestion-controller"] = n.CongestionControl
-		} else {
-			v["congestion-controller"] = "bbr"
-		}
-		v["udp-relay-mode"] = "native"
-	}
-	if isQUICProtocol(n.Protocol) {
-		// QUIC 协议在 Clash 里就是上面 + TLS 字段，直接返回，
-		// 别再掉进下面的 network switch（udp 会被当成不支持的传输）。
-		if n.ServerName != "" {
-			v["sni"] = n.ServerName
-		}
-		if n.Insecure {
-			v["skip-cert-verify"] = true
-		}
-		if n.Pin != "" {
-			v["fingerprint"] = strings.ReplaceAll(n.Pin, ":", "")
-		}
-		if len(n.ALPN) > 0 {
-			v["alpn"] = n.ALPN
-		} else {
-			v["alpn"] = []string{"h3"}
-		}
-		return v, nil
 	}
 	if n.Security != "none" {
 		v["tls"] = true
-		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" {
+		if n.Protocol == "trojan" || n.Protocol == "http" || n.Protocol == "socks5" || n.Protocol == "hysteria2" || n.Protocol == "tuic" {
 			v["sni"] = n.ServerName
 		} else {
 			v["servername"] = n.ServerName
@@ -508,12 +340,15 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		if n.Encryption != "" && n.Encryption != "none" {
 			return nil, fmt.Errorf("%s: 此VLESS加密方式请使用通用订阅", n.Name)
 		}
-	case "vmess":
-		v["uuid"] = n.UUID
-		v["security"] = n.Cipher
-		v["alter_id"] = n.AlterID
 	case "trojan":
 		v["password"] = n.Password
+	case "hysteria2":
+		v["password"] = n.Password
+	case "tuic":
+		v["uuid"] = n.UUID
+		v["password"] = n.Password
+		v["congestion_control"] = "bbr"
+		v["udp_relay_mode"] = "native"
 	case "ss":
 		v["password"] = n.Password
 		v["method"] = n.Cipher
@@ -525,56 +360,6 @@ func (n subscriptionNode) singBoxProxy() (map[string]any, error) {
 		if n.Protocol == "socks5" {
 			v["version"] = "5"
 		}
-	}
-	if isQUICProtocol(n.Protocol) {
-		// sing-box 客户端的 QUIC 出站同样没有 transport：
-		// Hy2 是 password + TLS，TUIC 是 uuid + password + 拥塞控制。
-		tls := map[string]any{"enabled": true, "server_name": n.ServerName}
-		if n.Insecure {
-			tls["insecure"] = true
-		}
-		if len(n.ALPN) > 0 {
-			tls["alpn"] = n.ALPN
-		} else {
-			tls["alpn"] = []string{"h3"}
-		}
-		if n.Pin != "" {
-			pin, err := hex.DecodeString(strings.ReplaceAll(n.Pin, ":", ""))
-			if err != nil || len(pin) != 32 {
-				return nil, fmt.Errorf("证书指纹格式无效")
-			}
-			tls["certificate_sha256"] = []string{base64.StdEncoding.EncodeToString(pin)}
-		}
-		v["tls"] = tls
-		switch n.Protocol {
-		case "hysteria2":
-			v["password"] = n.Password
-			if n.Obfs != "" {
-				v["obfs"] = map[string]any{"type": n.Obfs, "password": n.ObfsPassword}
-			}
-			if n.HopPorts != "" {
-				// sing-box 客户端用 server_ports 跳跃：主端口 + 跳跃段，
-				// server_port 设了 server_ports 后会被忽略，间隔默认 30s。
-				serverPorts := []string{strconv.Itoa(n.Port)}
-				for _, p := range strings.Split(n.HopPorts, ",") {
-					if p = strings.TrimSpace(p); p != "" {
-						serverPorts = append(serverPorts, p)
-					}
-				}
-				v["server_ports"] = serverPorts
-				v["hop_interval"] = "30s"
-			}
-		case "tuic":
-			v["uuid"] = n.UUID
-			v["password"] = n.Password
-			if n.CongestionControl != "" {
-				v["congestion_control"] = n.CongestionControl
-			} else {
-				v["congestion_control"] = "bbr"
-			}
-			v["udp_relay_mode"] = "native"
-		}
-		return v, nil
 	}
 	if n.Security != "none" {
 		tls := map[string]any{"enabled": true, "server_name": n.ServerName}

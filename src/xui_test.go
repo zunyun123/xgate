@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -124,36 +123,11 @@ webBasePath: /abc123/
 	}
 }
 
-// vmess 的分享链接是 base64 编码的 JSON，按 ":端口?" 匹配一条也筛不出来。
-func TestLinkForPortHandlesVMess(t *testing.T) {
-	conf := map[string]any{
-		"v": "2", "ps": "t-ws", "add": "localhost", "port": 40978,
-		"id": "06a30cf8-2c06-4aeb-82fe-b4c7f1ab0159", "net": "ws", "path": "/abc",
-	}
-	blob, _ := json.Marshal(conf)
-	link := "vmess://" + base64.StdEncoding.EncodeToString(blob)
-
-	fixed, ok := linkForPort(link, 40978, "1.2.3.4")
-	if !ok {
-		t.Fatal("端口对得上却被筛掉了")
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(fixed, "vmess://"))
-	if err != nil {
-		t.Fatalf("解码失败: %v", err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(decoded, &got); err != nil {
-		t.Fatalf("解析失败: %v", err)
-	}
-	if got["add"] != "1.2.3.4" {
-		t.Errorf("add = %v, want 1.2.3.4", got["add"])
-	}
-	if int(toFloat(got["port"])) != 40978 {
-		t.Errorf("端口被改坏了: %v", got["port"])
-	}
-
-	if _, ok := linkForPort(link, 12345, "1.2.3.4"); ok {
-		t.Error("端口对不上时不该返回")
+// VMess 已移除：vmess:// 链接不再匹配，无论端口对不对都返回不匹配。
+func TestLinkForPortRejectsVMess(t *testing.T) {
+	link := "vmess://eyJ2IjogIjIifQ=="
+	if _, ok := linkForPort(link, 40978, "1.2.3.4"); ok {
+		t.Error("VMess 已移除，不该再返回匹配")
 	}
 }
 

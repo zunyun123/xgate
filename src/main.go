@@ -501,7 +501,7 @@ func apiSettings(auth *Auth, srv *webServer) http.HandlerFunc {
 
 // apiUpdateCheck 问 GitHub 最新 release，回报当前/最新版本与更新内容。
 func apiUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, UpdateStatus{Current: version, Latest: version, HasUpdate: false, Notes: "Miku Gate 使用安装包更新：在 VPS 运行 miku update /路径/新版安装包.tar.gz，保留节点和口令。", URL: "https://github.com/vioIetMiku/miku-gate"})
+	writeJSON(w, 200, UpdateStatus{Current: version, Latest: version, HasUpdate: false, Notes: "Miku Gate 使用安装包更新：在 VPS 运行 miku update /路径/新版安装包.tar.gz，保留节点和口令。", URL: "https://github.com/" + updateRepoValue()})
 }
 func apiUpdateApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 409, map[string]string{"error": "请在VPS运行 miku update /路径/新版快速包.tar.gz"})
@@ -943,9 +943,6 @@ func apiInboundCreate(m *Manager) http.HandlerFunc {
 			Host:     q.Get("host"),
 			Security: q.Get("security"),
 			Vision:   q.Get("vision") == "1",
-
-			ObfsPassword: q.Get("obfs_password"),
-			HopPorts:     q.Get("hop_ports"),
 
 			ServerName: q.Get("sni"),
 			CertFile:   q.Get("cert"),

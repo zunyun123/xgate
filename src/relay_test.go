@@ -95,6 +95,25 @@ func TestRelayShareLinks(t *testing.T) {
 	}
 }
 
+func TestVMessRemoved(t *testing.T) {
+	if _, err := normalizeInboundSpec(NewInboundSpec{Protocol: "vmess"}, map[int]bool{}); err == nil {
+		t.Fatal("VMess 新建应被拒绝")
+	}
+	if _, err := parseSubscriptionNode("vmess://eyJ2IjogIjIifQ=="); err == nil {
+		t.Fatal("vmess:// 链接应被拒绝")
+	}
+	cfg, err := buildSingBoxConfig([]*nativeInbound{{Enable: true, Protocol: "vmess", Port: 10003, Remark: "legacy"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg["inbounds"].([]any)) != 0 {
+		t.Fatal("残留 VMess 入站不应生成运行配置")
+	}
+	if link := shareLink(&nativeInbound{Protocol: "vmess", Port: 10003, Remark: "legacy"}, nativeClient{ID: "x"}, "203.0.113.1"); link != "" {
+		t.Fatalf("残留 VMess 入站不应输出链接: %s", link)
+	}
+}
+
 func TestRelaySpecValidation(t *testing.T) {
 	if _, err := normalizeInboundSpec(NewInboundSpec{Protocol: "hysteria2", Network: "ws"}, map[int]bool{}); err == nil {
 		t.Fatal("hy2 + ws 应被拒绝")

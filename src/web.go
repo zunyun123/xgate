@@ -323,22 +323,22 @@ button,input,select,textarea{border-radius:8px}button{padding:7px 12px}h2,.bar h
       </button>
     </div>
     <div class="body">
-      <details style="margin-bottom:16px"><summary>粘贴本 VPS 已生成的节点链接</summary><label class="f"><span>分享链接（每行一个）</span><textarea id="nimport" rows="3" placeholder="vless://…、trojan://…、hysteria2://…、tuic://…、socks5://…、http://…（VMess 已移除，不再新建）"></textarea></label><div class="hint">核对本 VPS 的发布地址、监听端口和凭据；识别现有入口后可用于批量创建出口。</div><button id="nimportConfirm">确认识别</button><div class="hint" id="nimportHint"></div></details>
+      <details style="margin-bottom:16px"><summary>粘贴本 VPS 已生成的节点链接</summary><label class="f"><span>分享链接（每行一个）</span><textarea id="nimport" rows="3" placeholder="vless://…、trojan://…、hysteria2://…、tuic://…、socks5://…、http://…"></textarea></label><div class="hint">核对本 VPS 的发布地址、监听端口和凭据；识别现有入口后可用于批量创建出口。</div><button id="nimportConfirm">确认识别</button><div class="hint" id="nimportHint"></div></details>
 
       <label class="f">
         <span>协议</span>
         <select id="nproto">
           <option value="vless">VLESS</option>
           <option value="trojan">Trojan</option>
-          <option value="hysteria2">Hysteria2</option>
-          <option value="tuic">TUIC</option>
+          <option value="hysteria2">Hysteria2（仅 sing-box，串联 8500 出口）</option>
+          <option value="tuic">TUIC（仅 sing-box，串联 8500 出口）</option>
         </select>
       </label>
       <label class="f">
         <span>传输</span>
         <select id="nnet">
           <option value="tcp">TCP</option>
-          <option value="udp">UDP（QUIC，仅 Hysteria2/TUIC）</option>
+          <option value="udp">UDP（仅 Hysteria2/TUIC）</option>
           <option value="ws">WebSocket</option>
           <option value="grpc">gRPC</option>
           <option value="httpupgrade">HTTPUpgrade</option>
@@ -377,14 +377,6 @@ button,input,select,textarea{border-radius:8px}button{padding:7px 12px}h2,.bar h
       <label class="f" id="npathwrap" hidden>
         <span id="npathlabel">路径</span>
         <input id="npath" type="text" placeholder="留空自动生成">
-      </label>
-      <label class="f" id="nobfswrap" hidden>
-        <span>Salamander 混淆口令（仅 Hysteria2）</span>
-        <input id="nobfs" type="text" placeholder="留空 = 不混淆；填了客户端也要填同样的口令">
-      </label>
-      <label class="f" id="nhopwrap" hidden>
-        <span>端口跳跃段（仅 Hysteria2）</span>
-        <input id="nhop" type="text" placeholder="留空 = 不跳跃，如 30010-30020；最多 32 个端口，需单独放行 UDP">
       </label>
       <label class="f">
         <span>端口</span>
@@ -964,43 +956,20 @@ function syncNodeForm(){
   const proto = $('#nproto').value;
   let net     = $('#nnet').value;
   const sec   = $('#nsec').value;
-  const isQUIC = proto === 'hysteria2' || proto === 'tuic';
 
-  // Hysteria2/TUIC 的组合是固定的：UDP + TLS，没有路径、Vision、REALITY。
-  // 后端 normalize 也会再校验一次，这里只是让表单不给用户填错的机会。
-  if(isQUIC){
-    $('#nnet').value = 'udp'; net = 'udp';
-    for(const option of $('#nnet').options){ option.disabled = option.value !== 'udp'; }
-    const secSel = $('#nsec');
-    for(const o of secSel.options){ o.disabled = o.value !== 'tls'; }
-    secSel.value = 'tls';
-    $('#nsniwrap').hidden  = false;
-    $('#ncertificatewrap').hidden = false;
-    $('#ncertwrap').hidden = $('#ncertificate').value !== 'manual';
-    $('#nkeywrap').hidden = $('#ncertificate').value !== 'manual';
-    $('#ndestwrap').hidden = true;
-    $('#nvisionwrap').hidden = true;
-    $('#nvision').checked = false;
-    $('#npathwrap').hidden = true;
-    // Salamander 与端口跳跃只属于 Hysteria2：TUIC 填了后端也会报错，
-    // 所以 TUIC 下直接把这两个字段藏起来。
-    const isHy2 = proto === 'hysteria2';
-    $('#nobfswrap').hidden = !isHy2;
-    $('#nhopwrap').hidden = !isHy2;
-    if(!isHy2){ $('#nobfs').value = ''; $('#nhop').value = ''; }
-    $('#nsechint').textContent = 'Hysteria2/TUIC 强制 UDP + TLS，仅自建 sing-box 后端可用（Xray/3x-ui/S-UI 会直接报错）。放行 UDP 端口；绑定出口后流量走该出口的 SOCKS5（VPN Gate 家宽），未绑定则直连。Hy2 混淆/跳跃填了就生效，旧节点不会自动改，要升级请新建。';
-    return;
-  }
-
-  // REALITY 靠模仿 TLS 握手工作，套在自带头部的传输上没有意义
-  for(const option of $('#nnet').options){ option.disabled = ((view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp') || option.value === 'udp'; }
+  // Hysteria2/TUIC 是 UDP/QUIC + 强制 TLS 的串联入站，只在 sing-box 下能建：
+  // 传输锁死 UDP，安全锁死 TLS，其他选项全禁掉，免得用户配出后端会拒绝的组合。
+  const isRelay = proto === 'hysteria2' || proto === 'tuic';
+  for(const option of $('#nnet').options){ option.disabled = isRelay ? option.value !== 'udp' : (view.backend === 'sing-box' || view.backend === 's-ui') && option.value === 'xhttp'; }
+  if(isRelay){ $('#nnet').value = 'udp'; net = 'udp'; }
   if($('#nnet').selectedOptions[0].disabled) { $('#nnet').value = 'tcp'; net = 'tcp'; }
-  const realityOK = net === 'tcp' || net === 'xhttp' || net === 'grpc';
+  const realityOK = !isRelay && (net === 'tcp' || net === 'xhttp' || net === 'grpc');
   const secSel = $('#nsec');
   for(const o of secSel.options){
     if(o.value === 'reality') o.disabled = !realityOK;
-    else o.disabled = false;
+    if(o.value === 'none') o.disabled = isRelay;
   }
+  if(isRelay) secSel.value = 'tls';
   if(secSel.value === 'reality' && !realityOK) secSel.value = 'none';
 
   const cur = secSel.value;
@@ -1018,10 +987,9 @@ $('#ncertwrap').hidden = cur !== 'tls' || $('#ncertificate').value !== 'manual';
   const needPath = net === 'ws' || net === 'httpupgrade' || net === 'xhttp' || net === 'grpc';
   $('#npathwrap').hidden = !needPath;
   $('#npathlabel').textContent = net === 'grpc' ? '服务名' : '路径';
-  $('#nobfswrap').hidden = true;
-  $('#nhopwrap').hidden = true;
 
   $('#nsechint').textContent =
+    isRelay ? '串联模式：客户端流量先到本机 sing-box，再经本地 8500 SOCKS5 出口出海；未绑出口时默认走 8500，绑了出口则走该出口。' :
     cur === 'reality' ? '密钥与 shortId 自动生成' :
     cur === 'tls' ? '优先使用已绑定域名与证书；自签证书链接带指纹。' : '';
 }
@@ -1044,10 +1012,6 @@ $('#ncreate').onclick = async e => {
     dest:     ($('#ndest').value || '').trim(),
   });
   if($('#nvision').checked) q.set('vision', '1');
-  if($('#nproto').value === 'hysteria2'){
-    q.set('obfs_password', ($('#nobfs').value || '').trim());
-    q.set('hop_ports', ($('#nhop').value || '').trim());
-  }
   const selection = ($('#ncertificate').value || 'auto').split('|');
   if($('#nsec').value === 'tls'){
     q.set('certificate_mode', selection[0] === 'manual' || selection[0] === 'self_signed' ? selection[0] : 'auto');

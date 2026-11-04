@@ -16,7 +16,7 @@ func xclFixture(t *testing.T) *XCL {
 	  "inbounds": [
 	    {"tag": "vless-ws", "port": 10001, "protocol": "vless"},
 	    {"tag": "trojan-ws", "port": 10002, "protocol": "trojan"},
-	    {"tag": "vmess-ws", "port": 10003, "protocol": "vmess"}
+	    {"tag": "hysteria2-udp", "port": 10003, "protocol": "hysteria2"}
 	  ],
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom"},

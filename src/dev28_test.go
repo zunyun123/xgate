@@ -106,8 +106,10 @@ func TestSourceReorderChangesSelectionAndIsPersisted(t *testing.T) {
 
 func TestSubscriptionFormatsPreserveCredentialsAndTransport(t *testing.T) {
 	reality := "vless://" + fixtureUUID + "@198.51.100.8:443?type=tcp&security=reality&sni=example.com&pbk=fixtureKey&sid=0123&fp=chrome&flow=xtls-rprx-vision#Japan"
-	vmess := subscriptionNode{Protocol: "vmess", Name: "WebSocket", Server: "ws.example.com", Port: 443, UUID: fixtureUUID, Cipher: "auto", Network: "ws", Security: "tls", ServerName: "ws.example.com", Host: "ws.example.com", Path: "/socket"}.vmessLink()
-	links := []string{reality, vmess, "socks5://a%40b:p%3Aa@198.51.100.9:1080#Proxy"}
+	// VMess 已移除：原来用 vmessLink 造的 WebSocket 节点改用 VLESS+WS，
+	// 断言的 ws-opts / transport 字段保持不变。
+	wsNode := "vless://" + fixtureUUID + "@ws.example.com:443?type=ws&security=tls&sni=ws.example.com&path=/socket&host=ws.example.com#WebSocket"
+	links := []string{reality, wsNode, "socks5://a%40b:p%3Aa@198.51.100.9:1080#Proxy"}
 	body, content, err := formatSubscription(links, "clash")
 	if err != nil || !strings.Contains(content, "yaml") {
 		t.Fatal(err, content)
@@ -136,7 +138,7 @@ func TestSubscriptionFormatsPreserveCredentialsAndTransport(t *testing.T) {
 	}
 	body, _, err = formatSubscription(links, "v2ray")
 	decoded, decodeErr := base64.StdEncoding.DecodeString(body)
-	if err != nil || decodeErr != nil || !strings.Contains(string(decoded), vmess) {
+	if err != nil || decodeErr != nil || !strings.Contains(string(decoded), wsNode) {
 		t.Fatal("V2Ray base64 incomplete", err)
 	}
 	if _, _, err := formatSubscription([]string{strings.Replace(reality, "type=tcp", "type=xhttp", 1)}, "singbox"); err == nil {

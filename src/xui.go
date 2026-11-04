@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1076,43 +1075,15 @@ func (x *XUI) InboundDetail(id int, publicHost string) (*InboundDetail, error) {
 // linkForPort 从一批分享链接里挑出属于指定端口的那条，并把面板写的
 // localhost 换成实际可连的地址。
 //
-// vmess 的链接是 base64 编码的 JSON（vmess://<base64>），端口和地址都在里面，
-// 按 URI 形式匹配 ":端口?" 一条也筛不出来，得先解码。
+// VMess 已移除：vmess:// 链接不再匹配、也不再修正，直接返回不匹配。
 func linkForPort(link string, port int, publicHost string) (string, bool) {
 	if strings.HasPrefix(link, "vmess://") {
-		return fixVMessLink(link, port, publicHost)
+		return "", false
 	}
 	if strings.Contains(link, fmt.Sprintf(":%d?", port)) || strings.Contains(link, fmt.Sprintf(":%d#", port)) {
 		return strings.Replace(link, "@localhost:", "@"+publicHost+":", 1), true
 	}
 	return "", false
-}
-
-// fixVMessLink 解码 vmess 链接，确认端口后把 add 换成实际地址再编码回去。
-// 解不开就按原样放行：宁可给一条地址还是 localhost 的链接，也别整条丢掉。
-func fixVMessLink(link string, port int, publicHost string) (string, bool) {
-	payload := strings.TrimPrefix(link, "vmess://")
-	blob, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		// 有的面板版本用 URI 形式的 vmess，退回通用匹配
-		return "", strings.Contains(link, fmt.Sprintf(":%d?", port)) ||
-			strings.Contains(link, fmt.Sprintf(":%d#", port))
-	}
-	var conf map[string]any
-	if err := json.Unmarshal(blob, &conf); err != nil {
-		return "", false
-	}
-	if int(toFloat(conf["port"])) != port {
-		return "", false
-	}
-	if fmt.Sprint(orEmpty(conf["add"])) == "localhost" {
-		conf["add"] = publicHost
-	}
-	fixed, err := json.Marshal(conf)
-	if err != nil {
-		return link, true
-	}
-	return "vmess://" + base64.StdEncoding.EncodeToString(fixed), true
 }
 
 // clientLinks 取某个客户端在所有入站上的分享链接。
@@ -1567,10 +1538,10 @@ func xuiRunning() bool {
 // fanout 插手它的 sqlite 只会两边打架。载荷字段照面板自己生成的入站抄，
 // settings/streamSettings/sniffing 要编码成字符串，这是面板 API 的要求。
 func (x *XUI) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*CreatedInbound, error) {
-	// 3x-ui/Xray 没有 Hysteria2/TUIC 服务端入站，normalize 只校验组合，
-	// 这里必须拦住，否则会把 QUIC 协议当成 Xray 流式协议发给面板。
-	if isQUICProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
-		return nil, fmt.Errorf("Hysteria2/TUIC 只支持自建 sing-box 后端，3x-ui 后端暂不支持")
+	// 3x-ui 走的是 Xray 入站，Xray 没有 Hysteria2/TUIC 入站协议，
+	// 在这里建只会得到面板也认不出的配置，直接拦住。
+	if isRelayProtocol(strings.ToLower(strings.TrimSpace(spec.Protocol))) {
+		return nil, fmt.Errorf("%s 请在自建 sing-box 模式下创建，3x-ui 模式不支持", spec.Protocol)
 	}
 	used, err := x.usedPorts()
 	if err != nil {

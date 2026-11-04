@@ -141,8 +141,8 @@ func TestSubPathUnderBasePath(t *testing.T) {
 }
 
 func TestEncodeSub(t *testing.T) {
-	links := []string{"vless://a", "vmess://b"}
-	if got := encodeSub(links, "links"); got != "vless://a\nvmess://b" {
+	links := []string{"vless://a", "trojan://b"}
+	if got := encodeSub(links, "links"); got != "vless://a\ntrojan://b" {
 		t.Fatalf("明文格式不对: %q", got)
 	}
 	got := encodeSub(links, "base64")
@@ -150,7 +150,7 @@ func TestEncodeSub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("应当是整份 base64，解不开: %v", err)
 	}
-	if string(raw) != "vless://a\nvmess://b" {
+	if string(raw) != "vless://a\ntrojan://b" {
 		t.Fatalf("解出来是 %q", raw)
 	}
 }

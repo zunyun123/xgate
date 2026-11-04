@@ -138,7 +138,7 @@ func parseImportedLink(raw string) (ImportedLink, error) {
 	if err != nil {
 		return ImportedLink{}, err
 	}
-	if n.Protocol == "vless" || n.Protocol == "vmess" {
+	if n.Protocol == "vless" {
 		uuid, err := hex.DecodeString(strings.ReplaceAll(n.UUID, "-", ""))
 		if err != nil || len(uuid) != 16 {
 			return ImportedLink{}, fmt.Errorf("UUID格式无效")
@@ -148,9 +148,6 @@ func parseImportedLink(raw string) (ImportedLink, error) {
 	key, _ := json.Marshal(n)
 	sum := sha256.Sum256(key)
 	parsed, _ := parseSubscriptionNode(raw)
-	if parsed.Protocol == "vmess" {
-		raw = parsed.vmessLink()
-	}
 	return ImportedLink{ID: hex.EncodeToString(sum[:16]), Name: parsed.Name, Protocol: parsed.Protocol, Server: parsed.Server, Port: parsed.Port, Link: raw}, nil
 }
 

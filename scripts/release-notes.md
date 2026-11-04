@@ -3,7 +3,7 @@
 Docker 默认两个独立 Compose 项目：非特权 Nginx 静态前端，以及负责认证 / API / VPN 的 Go 后端。原生和仅后端继续兼容内嵌页面。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/vioIetMiku/miku-gate/main/mikugate.sh) --docker
+bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USER/miku-gate/main/mikugate.sh) --docker
 ```
 
 准备 Linux Docker/Compose、Python 3.10+ 和 TUN；部署后用 `sudo bash install-docker.sh frontend info` 读取真实前端完整地址，并用后端口令登录。
